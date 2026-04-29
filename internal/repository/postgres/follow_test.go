@@ -77,3 +77,40 @@ func TestFollowRepository_Exists_False(t *testing.T) {
 		t.Fatal("want exists=false")
 	}
 }
+
+func TestFollowRepository_GetFollowers(t *testing.T) {
+	truncate(t)
+	alice := seedUser(t, "alice")
+	bob := seedUser(t, "bob")
+	carol := seedUser(t, "carol")
+
+	repo := postgres.NewFollowRepository(testDB)
+	_ = repo.Create(context.Background(), &domain.Follow{
+		FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC(),
+	})
+	_ = repo.Create(context.Background(), &domain.Follow{
+		FollowerID: carol.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC(),
+	})
+
+	followers, err := repo.GetFollowers(context.Background(), bob.ID)
+	if err != nil {
+		t.Fatalf("GetFollowers: %v", err)
+	}
+	if len(followers) != 2 {
+		t.Fatalf("want 2 followers, got %d", len(followers))
+	}
+}
+
+func TestFollowRepository_GetFollowers_Empty(t *testing.T) {
+	truncate(t)
+	bob := seedUser(t, "bob_empty")
+
+	repo := postgres.NewFollowRepository(testDB)
+	followers, err := repo.GetFollowers(context.Background(), bob.ID)
+	if err != nil {
+		t.Fatalf("GetFollowers: %v", err)
+	}
+	if len(followers) != 0 {
+		t.Fatalf("want 0 followers, got %d", len(followers))
+	}
+}
