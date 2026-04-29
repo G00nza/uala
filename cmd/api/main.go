@@ -7,6 +7,7 @@ import (
 
 	"uala/internal/handler"
 	"uala/internal/infra"
+	"uala/internal/messaging/rabbitmq"
 	"uala/internal/repository/postgres"
 	redisrepo "uala/internal/repository/redis"
 	"uala/internal/usecase"
@@ -32,6 +33,12 @@ func main() {
 	}
 	defer rdb.Close()
 
+	amqpConn, err := rabbitmq.Connect(cfg.AMQPURL)
+	if err != nil {
+		log.Fatal("rabbitmq connect:", err)
+	}
+	defer amqpConn.Close()
+
 	userRepo := postgres.NewUserRepository(db)
 	tweetRepo := postgres.NewTweetRepository(db)
 	followRepo := postgres.NewFollowRepository(db)
@@ -39,9 +46,15 @@ func main() {
 
 	redisTimeline := redisrepo.NewTimelineRepository(rdb, pgTimelineRepo)
 
+	publisher := rabbitmq.NewPublisher(amqpConn)
+
+	consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisTimeline, pgTimelineRepo, cfg.FollowBackfillLimit)
+	go consumer.ConsumeTweets(ctx)
+	go consumer.ConsumeFollows(ctx)
+
 	userUC := usecase.NewUserUseCase(userRepo)
-	tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, followRepo, redisTimeline)
-	followUC := usecase.NewFollowUseCase(userRepo, followRepo)
+	tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, publisher)
+	followUC := usecase.NewFollowUseCase(userRepo, followRepo, publisher)
 	timelineUC := usecase.NewTimelineUseCase(userRepo, redisTimeline)
 
 	router := handler.NewRouter(

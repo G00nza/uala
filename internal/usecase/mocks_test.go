@@ -58,17 +58,22 @@ func (m *mockTimelineRepo) GetTimeline(ctx context.Context, userID uuid.UUID) ([
 	return m.items, m.err
 }
 
-type mockTimelineFanout struct {
-	appendErr error
-	calls     []fanoutCall
+type mockTweetPublisher struct {
+	publishErr error
+	calls      []domain.TweetCreatedEvent
 }
 
-type fanoutCall struct {
-	userID uuid.UUID
-	item   domain.TweetItem
+func (m *mockTweetPublisher) PublishTweetCreated(ctx context.Context, evt domain.TweetCreatedEvent) error {
+	m.calls = append(m.calls, evt)
+	return m.publishErr
 }
 
-func (m *mockTimelineFanout) AppendTweet(ctx context.Context, userID uuid.UUID, item domain.TweetItem) error {
-	m.calls = append(m.calls, fanoutCall{userID: userID, item: item})
-	return m.appendErr
+type mockFollowPublisher struct {
+	publishErr error
+	calls      []domain.FollowCreatedEvent
+}
+
+func (m *mockFollowPublisher) PublishFollowCreated(ctx context.Context, evt domain.FollowCreatedEvent) error {
+	m.calls = append(m.calls, evt)
+	return m.publishErr
 }

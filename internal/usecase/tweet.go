@@ -10,23 +10,20 @@ import (
 )
 
 type TweetUseCase struct {
-	userRepo   domain.UserRepository
-	tweetRepo  domain.TweetRepository
-	followRepo domain.FollowRepository
-	fanout     domain.TimelineFanout
+	userRepo  domain.UserRepository
+	tweetRepo domain.TweetRepository
+	publisher domain.TweetEventPublisher
 }
 
 func NewTweetUseCase(
 	userRepo domain.UserRepository,
 	tweetRepo domain.TweetRepository,
-	followRepo domain.FollowRepository,
-	fanout domain.TimelineFanout,
+	publisher domain.TweetEventPublisher,
 ) *TweetUseCase {
 	return &TweetUseCase{
-		userRepo:   userRepo,
-		tweetRepo:  tweetRepo,
-		followRepo: followRepo,
-		fanout:     fanout,
+		userRepo:  userRepo,
+		tweetRepo: tweetRepo,
+		publisher: publisher,
 	}
 }
 
@@ -50,18 +47,13 @@ func (uc *TweetUseCase) CreateTweet(ctx context.Context, userID uuid.UUID, conte
 	if err := uc.tweetRepo.Create(ctx, t); err != nil {
 		return nil, err
 	}
-	followers, err := uc.followRepo.GetFollowers(ctx, userID)
-	if err == nil && len(followers) > 0 {
-		item := domain.TweetItem{
-			ID:        t.ID,
-			UserID:    t.UserID,
-			Username:  user.Username,
-			Content:   t.Content,
-			CreatedAt: t.CreatedAt,
-		}
-		for _, followerID := range followers {
-			_ = uc.fanout.AppendTweet(ctx, followerID, item)
-		}
+	evt := domain.TweetCreatedEvent{
+		TweetID:   t.ID,
+		UserID:    t.UserID,
+		Username:  user.Username,
+		Content:   t.Content,
+		CreatedAt: t.CreatedAt,
 	}
+	_ = uc.publisher.PublishTweetCreated(ctx, evt)
 	return t, nil
 }

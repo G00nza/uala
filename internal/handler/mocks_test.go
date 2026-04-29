@@ -7,6 +7,18 @@ import (
 	"uala/internal/domain"
 )
 
+type noopTweetPublisher struct{}
+
+func (n *noopTweetPublisher) PublishTweetCreated(_ context.Context, _ domain.TweetCreatedEvent) error {
+	return nil
+}
+
+type noopFollowPublisher struct{}
+
+func (n *noopFollowPublisher) PublishFollowCreated(_ context.Context, _ domain.FollowCreatedEvent) error {
+	return nil
+}
+
 type mockUserSvc struct {
 	user *domain.User
 	err  error

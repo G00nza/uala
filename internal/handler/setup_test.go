@@ -80,8 +80,8 @@ func testServer(t *testing.T) *httptest.Server {
 
 	router := handler.NewRouter(
 		handler.NewUserHandler(usecase.NewUserUseCase(userRepo)),
-		handler.NewTweetHandler(usecase.NewTweetUseCase(userRepo, tweetRepo, followRepo, redisTimeline)),
-		handler.NewFollowHandler(usecase.NewFollowUseCase(userRepo, followRepo)),
+		handler.NewTweetHandler(usecase.NewTweetUseCase(userRepo, tweetRepo, &noopTweetPublisher{})),
+		handler.NewFollowHandler(usecase.NewFollowUseCase(userRepo, followRepo, &noopFollowPublisher{})),
 		handler.NewTimelineHandler(usecase.NewTimelineUseCase(userRepo, redisTimeline)),
 	)
 	srv := httptest.NewServer(router)

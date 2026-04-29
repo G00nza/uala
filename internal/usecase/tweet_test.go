@@ -12,10 +12,8 @@ import (
 func TestTweetUseCase_CreateTweet_OK(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "alice"}}
-	tweetRepo := &mockTweetRepo{}
-	followRepo := &mockFollowRepo{}
-	fanout := &mockTimelineFanout{}
-	uc := usecase.NewTweetUseCase(userRepo, tweetRepo, followRepo, fanout)
+	publisher := &mockTweetPublisher{}
+	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
 
 	tweet, err := uc.CreateTweet(context.Background(), userID, "hello world")
 	if err != nil {
@@ -30,7 +28,7 @@ func TestTweetUseCase_CreateTweet_OK(t *testing.T) {
 }
 
 func TestTweetUseCase_CreateTweet_EmptyContent(t *testing.T) {
-	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockFollowRepo{}, &mockTimelineFanout{})
+	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockTweetPublisher{})
 	_, err := uc.CreateTweet(context.Background(), uuid.New(), "")
 	if err != domain.ErrEmptyContent {
 		t.Fatalf("want ErrEmptyContent, got %v", err)
@@ -38,7 +36,7 @@ func TestTweetUseCase_CreateTweet_EmptyContent(t *testing.T) {
 }
 
 func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) {
-	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockFollowRepo{}, &mockTimelineFanout{})
+	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockTweetPublisher{})
 	content := string(make([]rune, 281))
 	_, err := uc.CreateTweet(context.Background(), uuid.New(), content)
 	if err != domain.ErrContentTooLong {
@@ -48,7 +46,7 @@ func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) {
 
 func TestTweetUseCase_CreateTweet_UserNotFound(t *testing.T) {
 	userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, &mockFollowRepo{}, &mockTimelineFanout{})
+	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, &mockTweetPublisher{})
 
 	_, err := uc.CreateTweet(context.Background(), uuid.New(), "hello")
 	if err != domain.ErrNotFound {
@@ -56,56 +54,39 @@ func TestTweetUseCase_CreateTweet_UserNotFound(t *testing.T) {
 	}
 }
 
-func TestTweetUseCase_CreateTweet_FanoutToFollowers(t *testing.T) {
+func TestTweetUseCase_CreateTweet_PublishesEvent(t *testing.T) {
 	userID := uuid.New()
-	follower1 := uuid.New()
-	follower2 := uuid.New()
-
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "bob"}}
-	followRepo := &mockFollowRepo{followers: []uuid.UUID{follower1, follower2}}
-	fanout := &mockTimelineFanout{}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, followRepo, fanout)
+	publisher := &mockTweetPublisher{}
+	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
 
-	_, err := uc.CreateTweet(context.Background(), userID, "fanout this")
+	_, err := uc.CreateTweet(context.Background(), userID, "async fanout")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(fanout.calls) != 2 {
-		t.Fatalf("want 2 fanout calls, got %d", len(fanout.calls))
+	if len(publisher.calls) != 1 {
+		t.Fatalf("want 1 publish call, got %d", len(publisher.calls))
 	}
-	if fanout.calls[0].item.Content != "fanout this" {
-		t.Fatalf("want content 'fanout this', got %s", fanout.calls[0].item.Content)
+	evt := publisher.calls[0]
+	if evt.Content != "async fanout" {
+		t.Fatalf("want content 'async fanout', got %s", evt.Content)
 	}
-	if fanout.calls[0].item.Username != "bob" {
-		t.Fatalf("want username 'bob', got %s", fanout.calls[0].item.Username)
+	if evt.Username != "bob" {
+		t.Fatalf("want username 'bob', got %s", evt.Username)
+	}
+	if evt.UserID != userID {
+		t.Fatalf("want userID %s, got %s", userID, evt.UserID)
 	}
 }
 
-func TestTweetUseCase_CreateTweet_FanoutErrorIsIgnored(t *testing.T) {
+func TestTweetUseCase_CreateTweet_PublishErrorIsIgnored(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "alice"}}
-	followRepo := &mockFollowRepo{followers: []uuid.UUID{uuid.New()}}
-	fanout := &mockTimelineFanout{appendErr: domain.ErrNotFound}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, followRepo, fanout)
+	publisher := &mockTweetPublisher{publishErr: domain.ErrNotFound}
+	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
 
-	_, err := uc.CreateTweet(context.Background(), userID, "ignore fanout error")
+	_, err := uc.CreateTweet(context.Background(), userID, "ignore publish error")
 	if err != nil {
-		t.Fatalf("fanout error must not propagate, got: %v", err)
-	}
-}
-
-func TestTweetUseCase_CreateTweet_NoFollowers_NoFanout(t *testing.T) {
-	userID := uuid.New()
-	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "loner"}}
-	followRepo := &mockFollowRepo{followers: []uuid.UUID{}}
-	fanout := &mockTimelineFanout{}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, followRepo, fanout)
-
-	_, err := uc.CreateTweet(context.Background(), userID, "nobody follows me")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(fanout.calls) != 0 {
-		t.Fatalf("want 0 fanout calls, got %d", len(fanout.calls))
+		t.Fatalf("publish error must not propagate, got: %v", err)
 	}
 }
