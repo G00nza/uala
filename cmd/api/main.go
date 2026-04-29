@@ -8,6 +8,7 @@ import (
 	"uala/internal/handler"
 	"uala/internal/infra"
 	"uala/internal/repository/postgres"
+	redisrepo "uala/internal/repository/redis"
 	"uala/internal/usecase"
 )
 
@@ -25,15 +26,23 @@ func main() {
 		log.Fatal("migrate:", err)
 	}
 
+	rdb, err := redisrepo.Connect(ctx, cfg.RedisURL)
+	if err != nil {
+		log.Fatal("redis connect:", err)
+	}
+	defer rdb.Close()
+
 	userRepo := postgres.NewUserRepository(db)
 	tweetRepo := postgres.NewTweetRepository(db)
 	followRepo := postgres.NewFollowRepository(db)
-	timelineRepo := postgres.NewTimelineRepository(db)
+	pgTimelineRepo := postgres.NewTimelineRepository(db)
+
+	redisTimeline := redisrepo.NewTimelineRepository(rdb, pgTimelineRepo)
 
 	userUC := usecase.NewUserUseCase(userRepo)
-	tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo)
+	tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, followRepo, redisTimeline)
 	followUC := usecase.NewFollowUseCase(userRepo, followRepo)
-	timelineUC := usecase.NewTimelineUseCase(userRepo, timelineRepo)
+	timelineUC := usecase.NewTimelineUseCase(userRepo, redisTimeline)
 
 	router := handler.NewRouter(
 		handler.NewUserHandler(userUC),
