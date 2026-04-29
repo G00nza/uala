@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"uala/internal/domain"
+	"uala/internal/metrics"
 )
 
 const timelineLimit = 500
@@ -34,9 +35,11 @@ func (r *TimelineRepository) GetTimeline(ctx context.Context, userID uuid.UUID) 
 	}
 
 	if exists > 0 {
+		metrics.TimelineCacheHitsTotal.Inc()
 		return r.readFromRedis(ctx, key)
 	}
 
+	metrics.TimelineCacheMissesTotal.Inc()
 	items, err := r.pgRepo.GetTimeline(ctx, userID)
 	if err != nil {
 		return nil, err
