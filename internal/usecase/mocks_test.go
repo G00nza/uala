@@ -30,9 +30,11 @@ func (m *mockTweetRepo) Create(ctx context.Context, t *domain.Tweet) error {
 }
 
 type mockFollowRepo struct {
-	existsResult bool
-	existsErr    error
-	createErr    error
+	existsResult    bool
+	existsErr       error
+	createErr       error
+	followers       []uuid.UUID
+	getFollowersErr error
 }
 
 func (m *mockFollowRepo) Create(ctx context.Context, f *domain.Follow) error {
@@ -43,6 +45,10 @@ func (m *mockFollowRepo) Exists(ctx context.Context, followerID, followeeID uuid
 	return m.existsResult, m.existsErr
 }
 
+func (m *mockFollowRepo) GetFollowers(ctx context.Context, followeeID uuid.UUID) ([]uuid.UUID, error) {
+	return m.followers, m.getFollowersErr
+}
+
 type mockTimelineRepo struct {
 	items []domain.TweetItem
 	err   error
@@ -50,4 +56,19 @@ type mockTimelineRepo struct {
 
 func (m *mockTimelineRepo) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
 	return m.items, m.err
+}
+
+type mockTimelineFanout struct {
+	appendErr error
+	calls     []fanoutCall
+}
+
+type fanoutCall struct {
+	userID uuid.UUID
+	item   domain.TweetItem
+}
+
+func (m *mockTimelineFanout) AppendTweet(ctx context.Context, userID uuid.UUID, item domain.TweetItem) error {
+	m.calls = append(m.calls, fanoutCall{userID: userID, item: item})
+	return m.appendErr
 }

@@ -41,3 +41,26 @@ func (r *FollowRepository) Exists(ctx context.Context, followerID, followeeID uu
 	).Scan(&exists)
 	return exists, err
 }
+
+func (r *FollowRepository) GetFollowers(ctx context.Context, followeeID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT follower_id FROM follows WHERE followee_id = $1`, followeeID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	return ids, rows.Err()
+}
