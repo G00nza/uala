@@ -1,0 +1,56 @@
+package postgres_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"uala/internal/domain"
+)
+
+func TestUserRepository_Create(t *testing.T) {
+	r := setup(t)
+
+	u := &domain.User{ID: uuid.New(), Username: "alice", CreatedAt: time.Now().UTC()}
+	if err := r.user.Create(context.Background(), u); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+}
+
+func TestUserRepository_Create_DuplicateUsername(t *testing.T) {
+	r := setup(t)
+
+	u1 := &domain.User{ID: uuid.New(), Username: "bob", CreatedAt: time.Now().UTC()}
+	u2 := &domain.User{ID: uuid.New(), Username: "bob", CreatedAt: time.Now().UTC()}
+	_ = r.user.Create(context.Background(), u1)
+
+	err := r.user.Create(context.Background(), u2)
+	if err != domain.ErrUsernameConflict {
+		t.Fatalf("want ErrUsernameConflict, got %v", err)
+	}
+}
+
+func TestUserRepository_GetByID(t *testing.T) {
+	r := setup(t)
+
+	u := &domain.User{ID: uuid.New(), Username: "carol", CreatedAt: time.Now().UTC()}
+	_ = r.user.Create(context.Background(), u)
+
+	got, err := r.user.GetByID(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Username != "carol" {
+		t.Fatalf("want carol, got %s", got.Username)
+	}
+}
+
+func TestUserRepository_GetByID_NotFound(t *testing.T) {
+	r := setup(t)
+
+	_, err := r.user.GetByID(context.Background(), uuid.New())
+	if err != domain.ErrNotFound {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}

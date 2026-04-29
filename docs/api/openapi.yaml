@@ -1,0 +1,266 @@
+openapi: 3.0.3
+info:
+  title: Ualá Twitter-like API
+  description: |
+    Plataforma de microblogging simplificada. Permite a los usuarios publicar tweets,
+    seguir a otros usuarios y ver un timeline con los tweets de los usuarios seguidos.
+
+    ## Autenticación
+
+    No hay sesiones ni autenticación. El usuario se identifica mediante el header `X-User-ID`
+    en los endpoints que lo requieren.
+
+    ## Backlog
+
+    - Paginación en `GET /timeline`
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local
+
+tags:
+  - name: Users
+    description: Gestión de usuarios
+  - name: Tweets
+    description: Publicación de tweets
+  - name: Social
+    description: Relaciones entre usuarios
+  - name: Timeline
+    description: Lectura del timeline
+
+paths:
+  /users:
+    post:
+      tags: [Users]
+      summary: Crear usuario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+            example:
+              username: "gonzalo"
+      responses:
+        '201':
+          description: Usuario creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedResponse'
+              example:
+                id: "550e8400-e29b-41d4-a716-446655440000"
+        '400':
+          description: Datos inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "username is required"
+        '409':
+          description: Username en uso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "username already taken"
+
+  /tweets:
+    post:
+      tags: [Tweets]
+      summary: Publicar tweet
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTweetRequest'
+            example:
+              content: "Hola mundo"
+      responses:
+        '201':
+          description: Tweet publicado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedResponse'
+              example:
+                id: "661f9511-f3ac-52e5-b827-557766551111"
+        '400':
+          description: Datos inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                empty:
+                  value:
+                    error: "content is required"
+                too_long:
+                  value:
+                    error: "content exceeds 280 characters"
+        '404':
+          description: Usuario no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "user not found"
+
+  /follow:
+    post:
+      tags: [Social]
+      summary: Seguir a un usuario
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FollowRequest'
+            example:
+              followee_id: "772g0622-g4bd-63f6-c938-668877662222"
+      responses:
+        '201':
+          description: Follow registrado
+          content:
+            application/json:
+              schema:
+                type: object
+              example: {}
+        '400':
+          description: Datos inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "cannot follow yourself"
+        '404':
+          description: Usuario no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "user not found"
+        '409':
+          description: Ya sigue a ese usuario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "already following"
+
+  /timeline:
+    get:
+      tags: [Timeline]
+      summary: Ver timeline
+      description: Devuelve los tweets de los usuarios seguidos, ordenados por fecha descendente. Devuelve array vacío si el usuario no sigue a nadie.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Timeline del usuario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimelineResponse'
+              example:
+                tweets:
+                  - id: "661f9511-f3ac-52e5-b827-557766551111"
+                    user_id: "772g0622-g4bd-63f6-c938-668877662222"
+                    username: "gonzalo"
+                    content: "Hola mundo"
+                    created_at: "2026-04-27T12:00:00Z"
+        '404':
+          description: Usuario no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "user not found"
+
+components:
+  parameters:
+    UserID:
+      name: X-User-ID
+      in: header
+      required: true
+      description: ID del usuario que realiza la acción
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    CreateUserRequest:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+          example: "gonzalo"
+
+    CreateTweetRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          maxLength: 280
+          example: "Hola mundo"
+
+    FollowRequest:
+      type: object
+      required: [followee_id]
+      properties:
+        followee_id:
+          type: string
+          format: uuid
+
+    CreatedResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+
+    TimelineResponse:
+      type: object
+      properties:
+        tweets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TweetItem'
+
+    TweetItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        content:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
