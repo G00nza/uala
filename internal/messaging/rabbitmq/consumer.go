@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"uala/internal/domain"
+	"uala/internal/metrics"
 )
 
 type Consumer struct {
@@ -92,13 +94,16 @@ func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
 	var evt domain.TweetCreatedEvent
 	if err := json.Unmarshal(d.Body, &evt); err != nil {
 		log.Printf("rabbitmq: unmarshal tweet event: %v", err)
+		metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetCreated).Inc()
 		_ = d.Nack(false, false)
 		return
 	}
 
+	start := time.Now()
 	followers, err := c.followRepo.GetFollowers(ctx, evt.UserID)
 	if err != nil {
 		log.Printf("rabbitmq: get followers for %s: %v", evt.UserID, err)
+		metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetCreated).Inc()
 		_ = d.Nack(false, true)
 		return
 	}
@@ -116,6 +121,8 @@ func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
 		}
 	}
 
+	metrics.FanoutDuration.Observe(time.Since(start).Seconds())
+	metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweetCreated).Inc()
 	_ = d.Ack(false)
 }
 
@@ -123,6 +130,7 @@ func (c *Consumer) handleFollowCreated(ctx context.Context, d amqp.Delivery) {
 	var evt domain.FollowCreatedEvent
 	if err := json.Unmarshal(d.Body, &evt); err != nil {
 		log.Printf("rabbitmq: unmarshal follow event: %v", err)
+		metrics.RabbitMQMessagesFailed.WithLabelValues(QueueFollowCreated).Inc()
 		_ = d.Nack(false, false)
 		return
 	}
@@ -130,6 +138,7 @@ func (c *Consumer) handleFollowCreated(ctx context.Context, d amqp.Delivery) {
 	tweets, err := c.userTweetsRepo.GetLatestByUser(ctx, evt.FolloweeID, c.backfillLimit)
 	if err != nil {
 		log.Printf("rabbitmq: get tweets for backfill %s: %v", evt.FolloweeID, err)
+		metrics.RabbitMQMessagesFailed.WithLabelValues(QueueFollowCreated).Inc()
 		_ = d.Nack(false, true)
 		return
 	}
@@ -140,5 +149,6 @@ func (c *Consumer) handleFollowCreated(ctx context.Context, d amqp.Delivery) {
 		}
 	}
 
+	metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueFollowCreated).Inc()
 	_ = d.Ack(false)
 }
