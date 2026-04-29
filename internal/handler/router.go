@@ -1,6 +1,11 @@
 package handler
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"uala/internal/metrics"
+)
 
 func NewRouter(
 	user *UserHandler,
@@ -13,5 +18,6 @@ func NewRouter(
 	mux.HandleFunc("POST /tweets", tweet.Create)
 	mux.HandleFunc("POST /follow", follow.Follow)
 	mux.HandleFunc("GET /timeline", timeline.GetTimeline)
-	return mux
+	mux.Handle("GET /metrics", promhttp.Handler())
+	return metrics.Middleware(mux)
 }
