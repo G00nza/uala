@@ -23,8 +23,8 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 	}
-	if err := parseJSON(r, &req); err != nil || req.Username == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username is required"})
+	if err := parseJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 	user, err := h.svc.CreateUser(r.Context(), req.Username)

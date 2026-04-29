@@ -29,6 +29,23 @@ func TestTweetUseCase_CreateTweet_OK(t *testing.T) {
 	}
 }
 
+func TestTweetUseCase_CreateTweet_EmptyContent(t *testing.T) {
+	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockFollowRepo{}, &mockTimelineFanout{})
+	_, err := uc.CreateTweet(context.Background(), uuid.New(), "")
+	if err != domain.ErrEmptyContent {
+		t.Fatalf("want ErrEmptyContent, got %v", err)
+	}
+}
+
+func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) {
+	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockFollowRepo{}, &mockTimelineFanout{})
+	content := string(make([]rune, 281))
+	_, err := uc.CreateTweet(context.Background(), uuid.New(), content)
+	if err != domain.ErrContentTooLong {
+		t.Fatalf("want ErrContentTooLong, got %v", err)
+	}
+}
+
 func TestTweetUseCase_CreateTweet_UserNotFound(t *testing.T) {
 	userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
 	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, &mockFollowRepo{}, &mockTimelineFanout{})

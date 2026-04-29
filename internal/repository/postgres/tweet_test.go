@@ -7,16 +7,13 @@ import (
 
 	"github.com/google/uuid"
 	"uala/internal/domain"
-	"uala/internal/repository/postgres"
 )
 
 func TestTweetRepository_Create(t *testing.T) {
-	truncate(t)
-	userRepo := postgres.NewUserRepository(testDB)
-	tweetRepo := postgres.NewTweetRepository(testDB)
+	r := setup(t)
 
 	user := &domain.User{ID: uuid.New(), Username: "alice", CreatedAt: time.Now().UTC()}
-	_ = userRepo.Create(context.Background(), user)
+	_ = r.user.Create(context.Background(), user)
 
 	tweet := &domain.Tweet{
 		ID:        uuid.New(),
@@ -24,14 +21,13 @@ func TestTweetRepository_Create(t *testing.T) {
 		Content:   "hello world",
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := tweetRepo.Create(context.Background(), tweet); err != nil {
+	if err := r.tweet.Create(context.Background(), tweet); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 }
 
 func TestTweetRepository_Create_UserNotFound(t *testing.T) {
-	truncate(t)
-	tweetRepo := postgres.NewTweetRepository(testDB)
+	r := setup(t)
 
 	tweet := &domain.Tweet{
 		ID:        uuid.New(),
@@ -39,7 +35,7 @@ func TestTweetRepository_Create_UserNotFound(t *testing.T) {
 		Content:   "orphan tweet",
 		CreatedAt: time.Now().UTC(),
 	}
-	err := tweetRepo.Create(context.Background(), tweet)
+	err := r.tweet.Create(context.Background(), tweet)
 	if err != domain.ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}

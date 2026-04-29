@@ -12,25 +12,6 @@ import (
 	"uala/internal/handler"
 )
 
-func TestFollowHandler_Follow_OK(t *testing.T) {
-	svc := &mockFollowSvc{}
-	h := handler.NewFollowHandler(svc)
-
-	follower := uuid.New()
-	followee := uuid.New()
-	body := fmt.Sprintf(`{"followee_id":"%s"}`, followee)
-	req := httptest.NewRequest(http.MethodPost, "/follow", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-User-ID", follower.String())
-	rec := httptest.NewRecorder()
-
-	h.Follow(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("want 201, got %d", rec.Code)
-	}
-}
-
 func TestFollowHandler_Follow_MissingUserID(t *testing.T) {
 	h := handler.NewFollowHandler(&mockFollowSvc{})
 

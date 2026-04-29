@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"uala/internal/domain"
@@ -30,6 +31,12 @@ func NewTweetUseCase(
 }
 
 func (uc *TweetUseCase) CreateTweet(ctx context.Context, userID uuid.UUID, content string) (*domain.Tweet, error) {
+	if content == "" {
+		return nil, domain.ErrEmptyContent
+	}
+	if utf8.RuneCountInString(content) > 280 {
+		return nil, domain.ErrContentTooLong
+	}
 	user, err := uc.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, err

@@ -7,17 +7,15 @@ import (
 
 	"github.com/google/uuid"
 	"uala/internal/domain"
-	"uala/internal/repository/postgres"
 )
 
 func TestTimelineRepository_GetTimeline_Empty(t *testing.T) {
-	truncate(t)
-	userRepo := postgres.NewUserRepository(testDB)
-	alice := &domain.User{ID: uuid.New(), Username: "alice_tl", CreatedAt: time.Now().UTC()}
-	_ = userRepo.Create(context.Background(), alice)
+	r := setup(t)
 
-	repo := postgres.NewTimelineRepository(testDB)
-	items, err := repo.GetTimeline(context.Background(), alice.ID)
+	alice := &domain.User{ID: uuid.New(), Username: "alice_tl", CreatedAt: time.Now().UTC()}
+	_ = r.user.Create(context.Background(), alice)
+
+	items, err := r.timeline.GetTimeline(context.Background(), alice.ID)
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -27,25 +25,21 @@ func TestTimelineRepository_GetTimeline_Empty(t *testing.T) {
 }
 
 func TestTimelineRepository_GetTimeline_WithTweets(t *testing.T) {
-	truncate(t)
-	userRepo := postgres.NewUserRepository(testDB)
-	tweetRepo := postgres.NewTweetRepository(testDB)
-	followRepo := postgres.NewFollowRepository(testDB)
-	timelineRepo := postgres.NewTimelineRepository(testDB)
+	r := setup(t)
 
 	alice := &domain.User{ID: uuid.New(), Username: "alice_tl2", CreatedAt: time.Now().UTC()}
 	bob := &domain.User{ID: uuid.New(), Username: "bob_tl2", CreatedAt: time.Now().UTC()}
-	_ = userRepo.Create(context.Background(), alice)
-	_ = userRepo.Create(context.Background(), bob)
+	_ = r.user.Create(context.Background(), alice)
+	_ = r.user.Create(context.Background(), bob)
 
-	_ = followRepo.Create(context.Background(), &domain.Follow{
+	_ = r.follow.Create(context.Background(), &domain.Follow{
 		FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC(),
 	})
-	_ = tweetRepo.Create(context.Background(), &domain.Tweet{
+	_ = r.tweet.Create(context.Background(), &domain.Tweet{
 		ID: uuid.New(), UserID: bob.ID, Content: "hello from bob", CreatedAt: time.Now().UTC(),
 	})
 
-	items, err := timelineRepo.GetTimeline(context.Background(), alice.ID)
+	items, err := r.timeline.GetTimeline(context.Background(), alice.ID)
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}

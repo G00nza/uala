@@ -23,6 +23,14 @@ func TestUserUseCase_CreateUser_OK(t *testing.T) {
 	}
 }
 
+func TestUserUseCase_CreateUser_EmptyUsername(t *testing.T) {
+	uc := usecase.NewUserUseCase(&mockUserRepo{})
+	_, err := uc.CreateUser(context.Background(), "")
+	if err != domain.ErrEmptyUsername {
+		t.Fatalf("want ErrEmptyUsername, got %v", err)
+	}
+}
+
 func TestUserUseCase_CreateUser_PropagatesRepoError(t *testing.T) {
 	repo := &mockUserRepo{createErr: domain.ErrUsernameConflict}
 	uc := usecase.NewUserUseCase(repo)

@@ -7,41 +7,37 @@ import (
 
 	"github.com/google/uuid"
 	"uala/internal/domain"
-	"uala/internal/repository/postgres"
 )
 
 func TestUserRepository_Create(t *testing.T) {
-	truncate(t)
-	repo := postgres.NewUserRepository(testDB)
+	r := setup(t)
 
 	u := &domain.User{ID: uuid.New(), Username: "alice", CreatedAt: time.Now().UTC()}
-	if err := repo.Create(context.Background(), u); err != nil {
+	if err := r.user.Create(context.Background(), u); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 }
 
 func TestUserRepository_Create_DuplicateUsername(t *testing.T) {
-	truncate(t)
-	repo := postgres.NewUserRepository(testDB)
+	r := setup(t)
 
 	u1 := &domain.User{ID: uuid.New(), Username: "bob", CreatedAt: time.Now().UTC()}
 	u2 := &domain.User{ID: uuid.New(), Username: "bob", CreatedAt: time.Now().UTC()}
-	_ = repo.Create(context.Background(), u1)
+	_ = r.user.Create(context.Background(), u1)
 
-	err := repo.Create(context.Background(), u2)
+	err := r.user.Create(context.Background(), u2)
 	if err != domain.ErrUsernameConflict {
 		t.Fatalf("want ErrUsernameConflict, got %v", err)
 	}
 }
 
 func TestUserRepository_GetByID(t *testing.T) {
-	truncate(t)
-	repo := postgres.NewUserRepository(testDB)
+	r := setup(t)
 
 	u := &domain.User{ID: uuid.New(), Username: "carol", CreatedAt: time.Now().UTC()}
-	_ = repo.Create(context.Background(), u)
+	_ = r.user.Create(context.Background(), u)
 
-	got, err := repo.GetByID(context.Background(), u.ID)
+	got, err := r.user.GetByID(context.Background(), u.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
@@ -51,10 +47,9 @@ func TestUserRepository_GetByID(t *testing.T) {
 }
 
 func TestUserRepository_GetByID_NotFound(t *testing.T) {
-	truncate(t)
-	repo := postgres.NewUserRepository(testDB)
+	r := setup(t)
 
-	_, err := repo.GetByID(context.Background(), uuid.New())
+	_, err := r.user.GetByID(context.Background(), uuid.New())
 	if err != domain.ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}

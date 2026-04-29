@@ -17,6 +17,9 @@ func NewUserUseCase(repo domain.UserRepository) *UserUseCase {
 }
 
 func (uc *UserUseCase) CreateUser(ctx context.Context, username string) (*domain.User, error) {
+	if username == "" {
+		return nil, domain.ErrEmptyUsername
+	}
 	u := &domain.User{
 		ID:        uuid.New(),
 		Username:  username,

@@ -10,9 +10,8 @@ import (
 	"uala/internal/repository/postgres"
 )
 
-func seedUser(t *testing.T, username string) *domain.User {
+func seedUser(t *testing.T, repo *postgres.UserRepository, username string) *domain.User {
 	t.Helper()
-	repo := postgres.NewUserRepository(testDB)
 	u := &domain.User{ID: uuid.New(), Username: username, CreatedAt: time.Now().UTC()}
 	if err := repo.Create(context.Background(), u); err != nil {
 		t.Fatalf("seedUser: %v", err)
@@ -21,42 +20,39 @@ func seedUser(t *testing.T, username string) *domain.User {
 }
 
 func TestFollowRepository_Create(t *testing.T) {
-	truncate(t)
-	alice := seedUser(t, "alice")
-	bob := seedUser(t, "bob")
+	r := setup(t)
+	alice := seedUser(t, r.user, "alice")
+	bob := seedUser(t, r.user, "bob")
 
-	repo := postgres.NewFollowRepository(testDB)
 	f := &domain.Follow{FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC()}
-	if err := repo.Create(context.Background(), f); err != nil {
+	if err := r.follow.Create(context.Background(), f); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 }
 
 func TestFollowRepository_Create_Duplicate(t *testing.T) {
-	truncate(t)
-	alice := seedUser(t, "alice")
-	bob := seedUser(t, "bob")
+	r := setup(t)
+	alice := seedUser(t, r.user, "alice")
+	bob := seedUser(t, r.user, "bob")
 
-	repo := postgres.NewFollowRepository(testDB)
 	f := &domain.Follow{FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC()}
-	_ = repo.Create(context.Background(), f)
+	_ = r.follow.Create(context.Background(), f)
 
-	err := repo.Create(context.Background(), f)
+	err := r.follow.Create(context.Background(), f)
 	if err != domain.ErrAlreadyFollowing {
 		t.Fatalf("want ErrAlreadyFollowing, got %v", err)
 	}
 }
 
 func TestFollowRepository_Exists_True(t *testing.T) {
-	truncate(t)
-	alice := seedUser(t, "alice")
-	bob := seedUser(t, "bob")
+	r := setup(t)
+	alice := seedUser(t, r.user, "alice")
+	bob := seedUser(t, r.user, "bob")
 
-	repo := postgres.NewFollowRepository(testDB)
 	f := &domain.Follow{FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC()}
-	_ = repo.Create(context.Background(), f)
+	_ = r.follow.Create(context.Background(), f)
 
-	exists, err := repo.Exists(context.Background(), alice.ID, bob.ID)
+	exists, err := r.follow.Exists(context.Background(), alice.ID, bob.ID)
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -66,10 +62,9 @@ func TestFollowRepository_Exists_True(t *testing.T) {
 }
 
 func TestFollowRepository_Exists_False(t *testing.T) {
-	truncate(t)
-	repo := postgres.NewFollowRepository(testDB)
+	r := setup(t)
 
-	exists, err := repo.Exists(context.Background(), uuid.New(), uuid.New())
+	exists, err := r.follow.Exists(context.Background(), uuid.New(), uuid.New())
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -79,20 +74,19 @@ func TestFollowRepository_Exists_False(t *testing.T) {
 }
 
 func TestFollowRepository_GetFollowers(t *testing.T) {
-	truncate(t)
-	alice := seedUser(t, "alice")
-	bob := seedUser(t, "bob")
-	carol := seedUser(t, "carol")
+	r := setup(t)
+	alice := seedUser(t, r.user, "alice")
+	bob := seedUser(t, r.user, "bob")
+	carol := seedUser(t, r.user, "carol")
 
-	repo := postgres.NewFollowRepository(testDB)
-	_ = repo.Create(context.Background(), &domain.Follow{
+	_ = r.follow.Create(context.Background(), &domain.Follow{
 		FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC(),
 	})
-	_ = repo.Create(context.Background(), &domain.Follow{
+	_ = r.follow.Create(context.Background(), &domain.Follow{
 		FollowerID: carol.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC(),
 	})
 
-	followers, err := repo.GetFollowers(context.Background(), bob.ID)
+	followers, err := r.follow.GetFollowers(context.Background(), bob.ID)
 	if err != nil {
 		t.Fatalf("GetFollowers: %v", err)
 	}
@@ -102,11 +96,10 @@ func TestFollowRepository_GetFollowers(t *testing.T) {
 }
 
 func TestFollowRepository_GetFollowers_Empty(t *testing.T) {
-	truncate(t)
-	bob := seedUser(t, "bob_empty")
+	r := setup(t)
+	bob := seedUser(t, r.user, "bob_empty")
 
-	repo := postgres.NewFollowRepository(testDB)
-	followers, err := repo.GetFollowers(context.Background(), bob.ID)
+	followers, err := r.follow.GetFollowers(context.Background(), bob.ID)
 	if err != nil {
 		t.Fatalf("GetFollowers: %v", err)
 	}

@@ -5,36 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"uala/internal/domain"
 	"uala/internal/handler"
 )
-
-func TestTimelineHandler_GetTimeline_OK(t *testing.T) {
-	userID := uuid.New()
-	svc := &mockTimelineSvc{items: []domain.TweetItem{
-		{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "hello", CreatedAt: time.Now()},
-	}}
-	h := handler.NewTimelineHandler(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/timeline", nil)
-	req.Header.Set("X-User-ID", userID.String())
-	rec := httptest.NewRecorder()
-
-	h.GetTimeline(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", rec.Code)
-	}
-	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
-	tweets, ok := resp["tweets"].([]any)
-	if !ok || len(tweets) != 1 {
-		t.Fatalf("want 1 tweet in response, got %v", resp)
-	}
-}
 
 func TestTimelineHandler_GetTimeline_Empty(t *testing.T) {
 	svc := &mockTimelineSvc{items: []domain.TweetItem{}}

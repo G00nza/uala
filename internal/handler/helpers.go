@@ -39,7 +39,10 @@ func domainErrToStatus(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrAlreadyFollowing):
 		return http.StatusConflict
-	case errors.Is(err, domain.ErrSelfFollow):
+	case errors.Is(err, domain.ErrSelfFollow),
+		errors.Is(err, domain.ErrEmptyUsername),
+		errors.Is(err, domain.ErrEmptyContent),
+		errors.Is(err, domain.ErrContentTooLong):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

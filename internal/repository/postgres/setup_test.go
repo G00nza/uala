@@ -32,11 +32,24 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func truncate(t *testing.T) {
+type testRepos struct {
+	user     *postgres.UserRepository
+	tweet    *postgres.TweetRepository
+	follow   *postgres.FollowRepository
+	timeline *postgres.TimelineRepository
+}
+
+func setup(t *testing.T) testRepos {
 	t.Helper()
 	_, err := testDB.Exec(context.Background(),
 		"TRUNCATE TABLE follows, tweets, users RESTART IDENTITY CASCADE")
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
+	}
+	return testRepos{
+		user:     postgres.NewUserRepository(testDB),
+		tweet:    postgres.NewTweetRepository(testDB),
+		follow:   postgres.NewFollowRepository(testDB),
+		timeline: postgres.NewTimelineRepository(testDB),
 	}
 }
