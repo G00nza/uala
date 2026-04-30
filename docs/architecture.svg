@@ -8,6 +8,8 @@
     </marker>
   </defs>
 
+  <rect width="800" height="520" fill="white"/>
+
   <!-- ── Subgraphs ── -->
 
   <rect x="140" y="50" width="215" height="268" rx="10" fill="#EBF4FF" stroke="#90CDF4" stroke-width="1.5"/>
