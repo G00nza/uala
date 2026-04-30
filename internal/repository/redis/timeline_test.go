@@ -24,7 +24,7 @@ func TestRedisTimeline_AppendAndGet(t *testing.T) {
 	userID := uuid.New()
 	authorID := uuid.New()
 
-	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{})
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
 
 	item := domain.TweetItem{
 		ID:        uuid.New(),
@@ -55,7 +55,7 @@ func TestRedisTimeline_AppendAndGet(t *testing.T) {
 func TestRedisTimeline_MultipleItems_OrderedByScoreDesc(t *testing.T) {
 	flushRedis(t)
 	userID := uuid.New()
-	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{})
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
 
 	older := domain.TweetItem{
 		ID: uuid.New(), UserID: uuid.New(), Username: "bob",
@@ -92,7 +92,7 @@ func TestRedisTimeline_FallbackToPostgresOnMiss(t *testing.T) {
 			Content: "from postgres", CreatedAt: time.Now().UTC().Truncate(time.Second),
 		},
 	}
-	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: pgItems})
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: pgItems}, 500)
 
 	items, err := repo.GetTimeline(context.Background(), userID)
 	if err != nil {
@@ -118,11 +118,11 @@ func TestRedisTimeline_FallbackPopulatesRedis(t *testing.T) {
 		},
 	}
 	// First call with Postgres data
-	repo1 := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: pgItems})
+	repo1 := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: pgItems}, 500)
 	_, _ = repo1.GetTimeline(context.Background(), userID)
 
 	// Second call with empty Postgres — should read from Redis cache
-	repo2 := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: []domain.TweetItem{}})
+	repo2 := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: []domain.TweetItem{}}, 500)
 	items, err := repo2.GetTimeline(context.Background(), userID)
 	if err != nil {
 		t.Fatalf("GetTimeline second call: %v", err)
@@ -141,7 +141,7 @@ func TestRedisTimeline_EmptyTimeline_NoFallbackLoop(t *testing.T) {
 
 	callCount := 0
 	pg := &countingPgTimeline{items: []domain.TweetItem{}, countPtr: &callCount}
-	repo := redisrepo.NewTimelineRepository(testRDB, pg)
+	repo := redisrepo.NewTimelineRepository(testRDB, pg, 500)
 
 	// User with no followed tweets: Redis miss → Postgres → empty → no Redis write
 	items, err := repo.GetTimeline(context.Background(), userID)

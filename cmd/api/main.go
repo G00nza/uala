@@ -76,7 +76,7 @@ func main() {
 	followRepo := postgres.NewFollowRepository(db)
 	pgTimelineRepo := postgres.NewTimelineRepository(db)
 
-	redisTimeline := redisrepo.NewTimelineRepository(rdb, pgTimelineRepo)
+	redisTimeline := redisrepo.NewTimelineRepository(rdb, pgTimelineRepo, cfg.TimelineLimit)
 
 	publisher := rabbitmq.NewPublisher(amqpConn)
 

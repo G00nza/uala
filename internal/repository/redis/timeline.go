@@ -11,15 +11,14 @@ import (
 	"uala/internal/metrics"
 )
 
-const timelineLimit = 500
-
 type TimelineRepository struct {
 	rdb    *redis.Client
 	pgRepo domain.TimelineRepository
+	limit  int64
 }
 
-func NewTimelineRepository(rdb *redis.Client, pgRepo domain.TimelineRepository) *TimelineRepository {
-	return &TimelineRepository{rdb: rdb, pgRepo: pgRepo}
+func NewTimelineRepository(rdb *redis.Client, pgRepo domain.TimelineRepository, limit int) *TimelineRepository {
+	return &TimelineRepository{rdb: rdb, pgRepo: pgRepo, limit: int64(limit)}
 }
 
 func timelineKey(userID uuid.UUID) string {
@@ -51,7 +50,7 @@ func (r *TimelineRepository) GetTimeline(ctx context.Context, userID uuid.UUID) 
 }
 
 func (r *TimelineRepository) readFromRedis(ctx context.Context, key string) ([]domain.TweetItem, error) {
-	vals, err := r.rdb.ZRevRange(ctx, key, 0, timelineLimit-1).Result()
+	vals, err := r.rdb.ZRevRange(ctx, key, 0, r.limit-1).Result()
 	if err != nil {
 		return nil, err
 	}

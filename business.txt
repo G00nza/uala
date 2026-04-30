@@ -1,0 +1,21 @@
+ASSUMPTIONS DE NEGOCIO
+======================
+
+1. Un usuario no puede seguirse a sí mismo. El intento devuelve 400.
+
+2. El follow es unidireccional: seguir a alguien no implica que esa persona
+   te siga de vuelta.
+
+3. Al hacer follow, el timeline del nuevo seguidor recibe un backfill con los
+   últimos N tweets del autor seguido (configurable via FOLLOW_BACKFILL_LIMIT,
+   default 20). Tweets anteriores a ese límite no se muestran.
+
+4. El timeline almacena hasta TIMELINE_LIMIT tweets por usuario en Redis
+   (default 500). Tweets más antiguos que ese límite no se sirven desde cache;
+   si se necesitara historial completo, requeriría un cambio de estrategia.
+
+5. No existe el concepto de "unfollow", "borrar tweet" ni "editar tweet"
+   en esta versión.
+
+6. Los usernames son únicos. Intentar crear un usuario con un username
+   ya existente devuelve 409.
