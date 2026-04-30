@@ -35,12 +35,14 @@
   <rect x="160" y="205" width="175" height="42" rx="6" fill="white" stroke="#4A5568" stroke-width="1.5"/>
   <text x="247" y="231" text-anchor="middle" font-size="13" fill="#2D3748">Use Cases</text>
 
-  <rect x="443" y="92" width="175" height="42" rx="6" fill="white" stroke="#4A5568" stroke-width="1.5"/>
-  <text x="530" y="118" text-anchor="middle" font-size="13" fill="#2D3748">PostgreSQL</text>
+  <!-- Redis (top) -->
+  <rect x="443" y="92" width="175" height="44" rx="6" fill="white" stroke="#4A5568" stroke-width="1.5"/>
+  <text x="530" y="112" text-anchor="middle" font-size="13" fill="#2D3748">Redis</text>
+  <text x="530" y="128" text-anchor="middle" font-size="10" fill="#718096">cache de timeline</text>
 
-  <rect x="443" y="178" width="175" height="44" rx="6" fill="white" stroke="#4A5568" stroke-width="1.5"/>
-  <text x="530" y="198" text-anchor="middle" font-size="13" fill="#2D3748">Redis</text>
-  <text x="530" y="214" text-anchor="middle" font-size="10" fill="#718096">cache de timeline</text>
+  <!-- PostgreSQL (bottom) -->
+  <rect x="443" y="178" width="175" height="42" rx="6" fill="white" stroke="#4A5568" stroke-width="1.5"/>
+  <text x="530" y="204" text-anchor="middle" font-size="13" fill="#2D3748">PostgreSQL</text>
 
   <rect x="443" y="355" width="175" height="42" rx="6" fill="white" stroke="#4A5568" stroke-width="1.5"/>
   <text x="530" y="381" text-anchor="middle" font-size="13" fill="#2D3748">RabbitMQ</text>
@@ -64,18 +66,18 @@
   <!-- Handlers → Use Cases -->
   <line x1="247" y1="139" x2="247" y2="205" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
 
-  <!-- Use Cases → PostgreSQL -->
-  <line x1="335" y1="215" x2="443" y2="113" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="372" y="128" font-size="10" fill="#718096">users</text>
-  <text x="372" y="140" font-size="10" fill="#718096">tweets</text>
+  <!-- Use Cases → Redis (top, steep upward) -->
+  <line x1="335" y1="215" x2="443" y2="114" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="375" y="158" font-size="10" fill="#718096">timeline</text>
 
-  <!-- Use Cases → Redis (cache hit) -->
-  <line x1="335" y1="231" x2="443" y2="207" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="375" y="208" font-size="10" fill="#718096">timeline</text>
+  <!-- Use Cases → PostgreSQL (bottom, nearly horizontal) -->
+  <line x1="335" y1="228" x2="443" y2="199" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="350" y="218" font-size="10" fill="#718096">users</text>
+  <text x="350" y="230" font-size="10" fill="#718096">tweets</text>
 
-  <!-- Redis → PostgreSQL (miss fallback, dashed) -->
-  <line x1="530" y1="178" x2="530" y2="134" stroke="#aaa" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-dash)"/>
-  <text x="548" y="160" font-size="10" fill="#aaa">miss</text>
+  <!-- Redis → PostgreSQL (miss fallback, dashed, downward) -->
+  <line x1="530" y1="136" x2="530" y2="178" stroke="#aaa" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-dash)"/>
+  <text x="548" y="162" font-size="10" fill="#aaa">miss</text>
 
   <!-- Use Cases → RabbitMQ (curve) -->
   <path d="M335 234 C418 234 418 376 443 376" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
@@ -87,9 +89,9 @@
   <text x="548" y="420" font-size="10" fill="#aaa">async</text>
 
   <!-- Consumer → Redis (right-side routing) -->
-  <path d="M618 455 L682 455 L682 200 L618 200" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
-  <text x="700" y="325" font-size="10" fill="#718096">fanout /</text>
-  <text x="700" y="337" font-size="10" fill="#718096">backfill</text>
+  <path d="M618 455 L682 455 L682 114 L618 114" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <text x="700" y="290" font-size="10" fill="#718096">fanout /</text>
+  <text x="700" y="302" font-size="10" fill="#718096">backfill</text>
 
   <!-- App → Prometheus (/metrics) -->
   <line x1="247" y1="318" x2="247" y2="388" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
