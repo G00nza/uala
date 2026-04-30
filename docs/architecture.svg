@@ -72,8 +72,9 @@
 
   <!-- Use Cases → PostgreSQL (bottom, nearly horizontal) -->
   <line x1="335" y1="228" x2="443" y2="199" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="350" y="218" font-size="10" fill="#718096">users</text>
-  <text x="350" y="230" font-size="10" fill="#718096">tweets</text>
+  <text x="375" y="205" font-size="10" fill="#718096">users</text>
+  <text x="375" y="217" font-size="10" fill="#718096">tweets</text>
+  <text x="375" y="229" font-size="10" fill="#718096">follows</text>
 
   <!-- Redis → PostgreSQL (miss fallback, dashed, downward) -->
   <line x1="530" y1="136" x2="530" y2="178" stroke="#aaa" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-dash)"/>
@@ -81,8 +82,6 @@
 
   <!-- Use Cases → RabbitMQ (curve) -->
   <path d="M335 234 C418 234 418 376 443 376" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
-  <text x="388" y="284" font-size="10" fill="#718096" text-anchor="middle">tweet.created /</text>
-  <text x="388" y="296" font-size="10" fill="#718096" text-anchor="middle">follow.created</text>
 
   <!-- RabbitMQ → Consumer (dashed, async) -->
   <line x1="530" y1="397" x2="530" y2="433" stroke="#aaa" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-dash)"/>
