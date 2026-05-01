@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,10 +13,16 @@ type FollowUseCase struct {
 	userRepo   domain.UserRepository
 	followRepo domain.FollowRepository
 	publisher  domain.FollowEventPublisher
+	logger     *slog.Logger
 }
 
 func NewFollowUseCase(userRepo domain.UserRepository, followRepo domain.FollowRepository, publisher domain.FollowEventPublisher) *FollowUseCase {
-	return &FollowUseCase{userRepo: userRepo, followRepo: followRepo, publisher: publisher}
+	return &FollowUseCase{userRepo: userRepo, followRepo: followRepo, publisher: publisher, logger: slog.Default()}
+}
+
+func (uc *FollowUseCase) WithLogger(l *slog.Logger) *FollowUseCase {
+	uc.logger = l
+	return uc
 }
 
 func (uc *FollowUseCase) Follow(ctx context.Context, followerID, followeeID uuid.UUID) error {
@@ -44,6 +51,8 @@ func (uc *FollowUseCase) Follow(ctx context.Context, followerID, followeeID uuid
 		FollowerID: followerID,
 		FolloweeID: followeeID,
 	}
-	_ = uc.publisher.PublishFollowCreated(ctx, evt)
+	if err := uc.publisher.PublishFollowCreated(ctx, evt); err != nil {
+		uc.logger.ErrorContext(ctx, "publish follow event", "follower_id", followerID, "followee_id", followeeID, "err", err)
+	}
 	return nil
 }

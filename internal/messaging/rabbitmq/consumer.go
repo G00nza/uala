@@ -18,7 +18,7 @@ import (
 const fanoutConcurrency = 100
 
 type Consumer struct {
-	conn           *amqp.Connection
+	conn           channeler
 	followRepo     domain.FollowRepository
 	fanout         domain.TimelineFanout
 	userTweetsRepo domain.UserTweetsRepository
@@ -29,7 +29,7 @@ type Consumer struct {
 }
 
 func NewConsumer(
-	conn *amqp.Connection,
+	conn channeler,
 	followRepo domain.FollowRepository,
 	fanout domain.TimelineFanout,
 	userTweetsRepo domain.UserTweetsRepository,
@@ -56,58 +56,74 @@ func (c *Consumer) WithDeadLetterPublisher(p domain.FanoutRetryPublisher) *Consu
 }
 
 func (c *Consumer) ConsumeTweets(ctx context.Context) {
-	ch, msgs := c.openChannel(QueueTweetCreated)
-	if ch == nil {
-		return
-	}
-	defer ch.Close()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case d, ok := <-msgs:
-			if !ok {
-				return
-			}
-			c.handleTweetCreated(ctx, d)
-		}
-	}
+	c.runLoop(ctx, QueueTweetCreated, c.handleTweetCreated)
 }
 
 func (c *Consumer) ConsumeFollows(ctx context.Context) {
-	ch, msgs := c.openChannel(QueueFollowCreated)
-	if ch == nil {
-		return
-	}
-	defer ch.Close()
+	c.runLoop(ctx, QueueFollowCreated, c.handleFollowCreated)
+}
 
+func (c *Consumer) ConsumeFanoutRetry(ctx context.Context) {
+	c.runLoop(ctx, QueueFanoutRetry, func(ctx context.Context, d amqp.Delivery) {
+		acked, nacked := c.handleFanoutRetry(ctx, d)
+		if acked {
+			_ = d.Ack(false)
+		} else if nacked {
+			_ = d.Nack(false, false)
+		}
+	})
+}
+
+// runLoop consumes messages from queue, restarting the channel on any error or drop.
+func (c *Consumer) runLoop(ctx context.Context, queue string, handler func(context.Context, amqp.Delivery)) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case d, ok := <-msgs:
-			if !ok {
-				return
-			}
-			c.handleFollowCreated(ctx, d)
+		default:
 		}
-	}
-}
 
-func (c *Consumer) openChannel(queue string) (*amqp.Channel, <-chan amqp.Delivery) {
-	ch, err := c.conn.Channel()
-	if err != nil {
-		log.Printf("rabbitmq: open channel for %s: %v", queue, err)
-		return nil, nil
-	}
-	msgs, err := ch.Consume(queue, "", false, false, false, false, nil)
-	if err != nil {
+		ch, err := c.conn.Channel()
+		if err != nil {
+			log.Printf("amqp: open channel for %s: %v, retrying in 1s", queue, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+
+		msgs, err := ch.Consume(queue, "", false, false, false, false, nil)
+		if err != nil {
+			ch.Close()
+			log.Printf("amqp: consume %s: %v, retrying in 1s", queue, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+
+		notifyClosed := ch.NotifyClose(make(chan *amqp.Error, 1))
+	consume:
+		for {
+			select {
+			case <-ctx.Done():
+				ch.Close()
+				return
+			case <-notifyClosed:
+				break consume
+			case d, ok := <-msgs:
+				if !ok {
+					break consume
+				}
+				handler(ctx, d)
+			}
+		}
 		ch.Close()
-		log.Printf("rabbitmq: consume %s: %v", queue, err)
-		return nil, nil
 	}
-	return ch, msgs
 }
 
 func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
@@ -231,31 +247,6 @@ func (c *Consumer) handleFanoutRetry(ctx context.Context, d amqp.Delivery) (acke
 		return false, true
 	}
 	return true, false
-}
-
-func (c *Consumer) ConsumeFanoutRetry(ctx context.Context) {
-	ch, msgs := c.openChannel(QueueFanoutRetry)
-	if ch == nil {
-		return
-	}
-	defer ch.Close()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case d, ok := <-msgs:
-			if !ok {
-				return
-			}
-			acked, nacked := c.handleFanoutRetry(ctx, d)
-			if acked {
-				_ = d.Ack(false)
-			} else if nacked {
-				_ = d.Nack(false, false)
-			}
-		}
-	}
 }
 
 func (c *Consumer) handleFollowCreated(ctx context.Context, d amqp.Delivery) {

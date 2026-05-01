@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,7 +21,8 @@ import (
 
 func main() {
 	cfg := infra.LoadConfig()
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	db, err := postgres.Connect(ctx, cfg.DatabaseURL, func(c *pgxpool.Config) {
 		c.ConnConfig.Tracer = &metrics.PgxTracer{}
@@ -27,10 +31,6 @@ func main() {
 		log.Fatal("connect:", err)
 	}
 	defer db.Close()
-
-	if err := postgres.Migrate(ctx, db); err != nil {
-		log.Fatal("migrate:", err)
-	}
 
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -46,7 +46,7 @@ func main() {
 	}
 	defer rdb.Close()
 
-	amqpConn, err := rabbitmq.Connect(cfg.AMQPURL)
+	amqpConn, err := rabbitmq.Connect(ctx, cfg.AMQPURL)
 	if err != nil {
 		log.Fatal("rabbitmq connect:", err)
 	}
@@ -100,8 +100,12 @@ func main() {
 		handler.NewTimelineHandler(timelineUC),
 	)
 
+	ln, err := net.Listen("tcp", ":"+cfg.Port)
+	if err != nil {
+		log.Fatal("listen:", err)
+	}
 	log.Printf("listening on :%s", cfg.Port)
-	if err := http.ListenAndServe(":"+cfg.Port, router); err != nil {
+	if err := serve(ctx, ln, router); err != nil {
 		log.Fatal(err)
 	}
 }

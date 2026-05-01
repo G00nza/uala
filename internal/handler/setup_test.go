@@ -7,11 +7,14 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 	"github.com/redis/go-redis/v9"
 	"uala/internal/handler"
 	"uala/internal/repository/postgres"
 	redisrepo "uala/internal/repository/redis"
 	"uala/internal/usecase"
+	"uala/migrations"
 )
 
 var (
@@ -37,10 +40,17 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("connect: " + err.Error())
 	}
-	if err := postgres.Migrate(context.Background(), pool); err != nil {
+	testDB = pool
+
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer sqlDB.Close()
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		panic("goose dialect: " + err.Error())
+	}
+	if err := goose.Up(sqlDB, "."); err != nil {
 		panic("migrate: " + err.Error())
 	}
-	testDB = pool
 
 	rdb, err := redisrepo.Connect(context.Background(), redisURL)
 	if err != nil {

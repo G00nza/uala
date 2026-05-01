@@ -1,7 +1,11 @@
 package usecase_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -88,5 +92,23 @@ func TestTweetUseCase_CreateTweet_PublishErrorIsIgnored(t *testing.T) {
 	_, err := uc.CreateTweet(context.Background(), userID, "ignore publish error")
 	if err != nil {
 		t.Fatalf("publish error must not propagate, got: %v", err)
+	}
+}
+
+func TestTweetUseCase_CreateTweet_PublishErrorIsLogged(t *testing.T) {
+	userID := uuid.New()
+	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "alice"}}
+	publisher := &mockTweetPublisher{publishErr: errors.New("rabbitmq connection refused")}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher).WithLogger(logger)
+
+	_, err := uc.CreateTweet(context.Background(), userID, "test publish logging")
+	if err != nil {
+		t.Fatalf("publish error must not propagate, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "rabbitmq connection refused") {
+		t.Fatalf("expected publish error in log, got: %q", buf.String())
 	}
 }

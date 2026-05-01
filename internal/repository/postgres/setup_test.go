@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 	"uala/internal/repository/postgres"
+	"uala/migrations"
 )
 
 var testDB *pgxpool.Pool
@@ -24,9 +27,17 @@ func TestMain(m *testing.M) {
 		panic("connect: " + err.Error())
 	}
 	testDB = pool
-	if err := postgres.Migrate(context.Background(), pool); err != nil {
+
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer sqlDB.Close()
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		panic("goose dialect: " + err.Error())
+	}
+	if err := goose.Up(sqlDB, "."); err != nil {
 		panic("migrate: " + err.Error())
 	}
+
 	code := m.Run()
 	pool.Close()
 	os.Exit(code)

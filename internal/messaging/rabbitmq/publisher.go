@@ -3,59 +3,73 @@ package rabbitmq
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"uala/internal/domain"
 )
 
-type Publisher struct {
-	conn *amqp.Connection
+// amqpChannel is the subset of *amqp.Channel the publisher uses.
+type amqpChannel interface {
+	Publish(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
+	Close() error
 }
 
-func NewPublisher(conn *amqp.Connection) *Publisher {
-	return &Publisher{conn: conn}
+type Publisher struct {
+	openCh func() (amqpChannel, error)
+	mu     sync.Mutex
+	ch     amqpChannel
+}
+
+func NewPublisher(conn channeler) *Publisher {
+	return &Publisher{
+		openCh: func() (amqpChannel, error) { return conn.Channel() },
+	}
 }
 
 func (p *Publisher) PublishTweetCreated(ctx context.Context, evt domain.TweetCreatedEvent) error {
-	return p.publish(QueueTweetCreated, evt)
+	return p.publishToExchange("", QueueTweetCreated, evt)
 }
 
 func (p *Publisher) PublishFollowCreated(ctx context.Context, evt domain.FollowCreatedEvent) error {
-	return p.publish(QueueFollowCreated, evt)
+	return p.publishToExchange("", QueueFollowCreated, evt)
 }
 
 func (p *Publisher) PublishFanoutRetry(ctx context.Context, evt domain.FanoutRetryEvent) error {
-	body, err := json.Marshal(evt)
-	if err != nil {
-		return err
-	}
-	ch, err := p.conn.Channel()
-	if err != nil {
-		return err
-	}
-	defer ch.Close()
-	return ch.Publish(ExchangeFanoutRetry, QueueFanoutRetry, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		Body:         body,
-	})
+	return p.publishToExchange(ExchangeFanoutRetry, QueueFanoutRetry, evt)
 }
 
 func (p *Publisher) PublishToDeadLetter(ctx context.Context, evt domain.FanoutRetryEvent) error {
-	body, err := json.Marshal(evt)
+	return p.publishToExchange("", QueueFanoutDead, evt)
+}
+
+func (p *Publisher) publishToExchange(exchange, key string, payload any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	ch, err := p.conn.Channel()
-	if err != nil {
-		return err
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ch == nil {
+		ch, err := p.openCh()
+		if err != nil {
+			return err
+		}
+		p.ch = ch
 	}
-	defer ch.Close()
-	return ch.Publish("", QueueFanoutDead, false, false, amqp.Publishing{
+
+	if err := p.ch.Publish(exchange, key, false, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		Body:         body,
-	})
+	}); err != nil {
+		p.ch.Close()
+		p.ch = nil
+		return err
+	}
+	return nil
 }
 
 // DeadLetterPublisher adapta Publisher para implementar domain.FanoutRetryPublisher
@@ -70,23 +84,4 @@ func NewDeadLetterPublisher(pub *Publisher) *DeadLetterPublisher {
 
 func (d *DeadLetterPublisher) PublishFanoutRetry(ctx context.Context, evt domain.FanoutRetryEvent) error {
 	return d.pub.PublishToDeadLetter(ctx, evt)
-}
-
-func (p *Publisher) publish(queue string, payload any) error {
-	ch, err := p.conn.Channel()
-	if err != nil {
-		return err
-	}
-	defer ch.Close()
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	return ch.Publish("", queue, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		Body:         body,
-	})
 }

@@ -1,7 +1,11 @@
 package usecase_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -75,5 +79,23 @@ func TestFollowUseCase_Follow_PublishesEvent(t *testing.T) {
 	}
 	if evt.FolloweeID != followee {
 		t.Fatalf("want followeeID %s, got %s", followee, evt.FolloweeID)
+	}
+}
+
+func TestFollowUseCase_Follow_PublishErrorIsLogged(t *testing.T) {
+	follower := uuid.New()
+	followee := uuid.New()
+	userRepo := &mockUserRepo{getUser: &domain.User{ID: followee}}
+	publisher := &mockFollowPublisher{publishErr: errors.New("rabbitmq connection refused")}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, publisher).WithLogger(logger)
+
+	if err := uc.Follow(context.Background(), follower, followee); err != nil {
+		t.Fatalf("publish error must not propagate, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "rabbitmq connection refused") {
+		t.Fatalf("expected publish error in log, got: %q", buf.String())
 	}
 }
