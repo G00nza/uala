@@ -60,6 +60,11 @@ var (
 		Name: "db_errors_total",
 		Help: "Postgres errors by type",
 	}, []string{"type"})
+
+	FanoutDeadLetterTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "fanout_dead_letter_total",
+		Help: "Tweets que no pudieron appendearse a un follower tras 10 reintentos.",
+	}, []string{"follower_id"})
 )
 
 func init() {
@@ -75,5 +80,6 @@ func init() {
 		DBQueryDuration,
 		DBConnectionsActive,
 		DBErrorsTotal,
+		FanoutDeadLetterTotal,
 	)
 }

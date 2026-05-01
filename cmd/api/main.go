@@ -80,9 +80,13 @@ func main() {
 
 	publisher := rabbitmq.NewPublisher(amqpConn)
 
-	consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisTimeline, pgTimelineRepo, cfg.FollowBackfillLimit)
+	consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisTimeline, pgTimelineRepo, cfg.FollowBackfillLimit).
+		WithRetryPublisher(publisher).
+		WithDeadLetterPublisher(rabbitmq.NewDeadLetterPublisher(publisher))
+
 	go consumer.ConsumeTweets(ctx)
 	go consumer.ConsumeFollows(ctx)
+	go consumer.ConsumeFanoutRetry(ctx)
 
 	userUC := usecase.NewUserUseCase(userRepo)
 	tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, publisher)

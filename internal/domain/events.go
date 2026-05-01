@@ -31,3 +31,12 @@ type FollowEventPublisher interface {
 type UserTweetsRepository interface {
 	GetLatestByUser(ctx context.Context, userID uuid.UUID, limit int) ([]TweetItem, error)
 }
+
+type FanoutRetryEvent struct {
+	FollowerID uuid.UUID `json:"follower_id"`
+	Tweet      TweetItem `json:"tweet"`
+}
+
+type FanoutRetryPublisher interface {
+	PublishFanoutRetry(ctx context.Context, evt FanoutRetryEvent) error
+}

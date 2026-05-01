@@ -76,7 +76,7 @@ func testServer(t *testing.T) *httptest.Server {
 	tweetRepo := postgres.NewTweetRepository(testDB)
 	followRepo := postgres.NewFollowRepository(testDB)
 	pgTimeline := postgres.NewTimelineRepository(testDB)
-	redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgTimeline)
+	redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgTimeline, 500)
 
 	router := handler.NewRouter(
 		handler.NewUserHandler(usecase.NewUserUseCase(userRepo)),

@@ -3,13 +3,19 @@ package rabbitmq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"golang.org/x/sync/errgroup"
 	"uala/internal/domain"
 	"uala/internal/metrics"
 )
+
+const fanoutConcurrency = 100
 
 type Consumer struct {
 	conn           *amqp.Connection
@@ -17,6 +23,9 @@ type Consumer struct {
 	fanout         domain.TimelineFanout
 	userTweetsRepo domain.UserTweetsRepository
 	backfillLimit  int
+	fanoutWorkers  int
+	retryPublisher domain.FanoutRetryPublisher
+	deadLetterPub  domain.FanoutRetryPublisher
 }
 
 func NewConsumer(
@@ -32,7 +41,18 @@ func NewConsumer(
 		fanout:         fanout,
 		userTweetsRepo: userTweetsRepo,
 		backfillLimit:  backfillLimit,
+		fanoutWorkers:  fanoutConcurrency,
 	}
+}
+
+func (c *Consumer) WithRetryPublisher(p domain.FanoutRetryPublisher) *Consumer {
+	c.retryPublisher = p
+	return c
+}
+
+func (c *Consumer) WithDeadLetterPublisher(p domain.FanoutRetryPublisher) *Consumer {
+	c.deadLetterPub = p
+	return c
 }
 
 func (c *Consumer) ConsumeTweets(ctx context.Context) {
@@ -108,6 +128,19 @@ func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
 		return
 	}
 
+	if err := c.fanoutTweet(ctx, evt, followers); err != nil {
+		log.Printf("rabbitmq: all fanout writes failed for tweet %s: %v", evt.TweetID, err)
+		metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetCreated).Inc()
+		_ = d.Nack(false, true)
+		return
+	}
+
+	metrics.FanoutDuration.Observe(time.Since(start).Seconds())
+	metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweetCreated).Inc()
+	_ = d.Ack(false)
+}
+
+func (c *Consumer) fanoutTweet(ctx context.Context, evt domain.TweetCreatedEvent, followers []uuid.UUID) error {
 	item := domain.TweetItem{
 		ID:        evt.TweetID,
 		UserID:    evt.UserID,
@@ -115,15 +148,114 @@ func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
 		Content:   evt.Content,
 		CreatedAt: evt.CreatedAt,
 	}
+
+	var (
+		sem     = make(chan struct{}, c.fanoutWorkers)
+		g, gctx = errgroup.WithContext(ctx)
+		handled atomic.Int64
+	)
+
 	for _, followerID := range followers {
-		if err := c.fanout.AppendTweet(ctx, followerID, item); err != nil {
-			log.Printf("rabbitmq: fanout tweet to %s: %v", followerID, err)
-		}
+		fid := followerID
+		sem <- struct{}{}
+		g.Go(func() error {
+			defer func() { <-sem }()
+			if err := c.fanout.AppendTweet(gctx, fid, item); err != nil {
+				log.Printf("rabbitmq: fanout tweet to %s: %v", fid, err)
+				if c.retryPublisher != nil {
+					if pubErr := c.retryPublisher.PublishFanoutRetry(ctx, domain.FanoutRetryEvent{
+						FollowerID: fid,
+						Tweet:      item,
+					}); pubErr != nil {
+						log.Printf("rabbitmq: publish retry for %s: %v", fid, pubErr)
+						return nil
+					}
+					handled.Add(1)
+				}
+				return nil
+			}
+			handled.Add(1)
+			return nil
+		})
 	}
 
-	metrics.FanoutDuration.Observe(time.Since(start).Seconds())
-	metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweetCreated).Inc()
-	_ = d.Ack(false)
+	_ = g.Wait()
+
+	if len(followers) > 0 && handled.Load() == 0 {
+		return errors.New("all fanout writes failed and no retries enqueued")
+	}
+	return nil
+}
+
+const maxFanoutRetries = 10
+
+func xDeathCount(d amqp.Delivery) int64 {
+	deaths, ok := d.Headers["x-death"].([]interface{})
+	if !ok {
+		return 0
+	}
+	for _, entry := range deaths {
+		table, ok := entry.(amqp.Table)
+		if !ok {
+			continue
+		}
+		if table["queue"] == QueueFanoutRetry {
+			if count, ok := table["count"].(int64); ok {
+				return count
+			}
+		}
+	}
+	return 0
+}
+
+func (c *Consumer) handleFanoutRetry(ctx context.Context, d amqp.Delivery) (acked, nacked bool) {
+	var evt domain.FanoutRetryEvent
+	if err := json.Unmarshal(d.Body, &evt); err != nil {
+		log.Printf("rabbitmq: unmarshal fanout retry: %v", err)
+		return false, true
+	}
+
+	if xDeathCount(d) >= maxFanoutRetries {
+		if c.deadLetterPub != nil {
+			if err := c.deadLetterPub.PublishFanoutRetry(ctx, evt); err != nil {
+				log.Printf("rabbitmq: publish dead letter for %s: %v", evt.FollowerID, err)
+			}
+		}
+		metrics.FanoutDeadLetterTotal.WithLabelValues(evt.FollowerID.String()).Inc()
+		log.Printf("rabbitmq: fanout dead letter follower=%s tweet=%s", evt.FollowerID, evt.Tweet.ID)
+		return true, false
+	}
+
+	if err := c.fanout.AppendTweet(ctx, evt.FollowerID, evt.Tweet); err != nil {
+		log.Printf("rabbitmq: retry AppendTweet for %s: %v", evt.FollowerID, err)
+		return false, true
+	}
+	return true, false
+}
+
+func (c *Consumer) ConsumeFanoutRetry(ctx context.Context) {
+	ch, msgs := c.openChannel(QueueFanoutRetry)
+	if ch == nil {
+		return
+	}
+	defer ch.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case d, ok := <-msgs:
+			if !ok {
+				return
+			}
+			acked, nacked := c.handleFanoutRetry(ctx, d)
+			if acked {
+				_ = d.Ack(false)
+			} else if nacked {
+				_ = d.Nack(false, false)
+			}
+		}
+	}
 }
 
 func (c *Consumer) handleFollowCreated(ctx context.Context, d amqp.Delivery) {

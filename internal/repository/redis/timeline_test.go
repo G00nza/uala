@@ -156,6 +156,35 @@ func TestRedisTimeline_EmptyTimeline_NoFallbackLoop(t *testing.T) {
 	}
 }
 
+func TestRedisTimeline_AppendTweet_DeduplicatesByTweetID(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
+
+	tweetID := uuid.New()
+	base := domain.TweetItem{
+		ID:        tweetID,
+		UserID:    uuid.New(),
+		Username:  "alice",
+		Content:   "original",
+		CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	// Same tweet ID, different content — simulates redelivered message with any byte difference.
+	redelivered := base
+	redelivered.Content = "redelivered"
+
+	_ = repo.AppendTweet(context.Background(), userID, base)
+	_ = repo.AppendTweet(context.Background(), userID, redelivered)
+
+	items, err := repo.GetTimeline(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("GetTimeline: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item for same tweet ID, got %d", len(items))
+	}
+}
+
 type countingPgTimeline struct {
 	items    []domain.TweetItem
 	countPtr *int
