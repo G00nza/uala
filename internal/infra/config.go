@@ -3,6 +3,7 @@ package infra
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -12,6 +13,7 @@ type Config struct {
 	Port                string
 	FollowBackfillLimit int
 	TimelineLimit       int
+	ActivityTTL         time.Duration
 }
 
 func LoadConfig() Config {
@@ -22,6 +24,7 @@ func LoadConfig() Config {
 		Port:                getenv("PORT", "8080"),
 		FollowBackfillLimit: getenvInt("FOLLOW_BACKFILL_LIMIT", 20),
 		TimelineLimit:       getenvInt("TIMELINE_LIMIT", 500),
+		ActivityTTL:         getenvDuration("ACTIVITY_TTL", 24*time.Hour),
 	}
 }
 
@@ -36,6 +39,15 @@ func getenvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getenvDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
 	return fallback
