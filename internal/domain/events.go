@@ -40,3 +40,12 @@ type FanoutRetryEvent struct {
 type FanoutRetryPublisher interface {
 	PublishFanoutRetry(ctx context.Context, evt FanoutRetryEvent) error
 }
+
+type UserActivityEvent struct {
+	UserID     uuid.UUID `json:"user_id"`
+	LastActive time.Time `json:"last_active"`
+}
+
+type UserActivityPublisher interface {
+	PublishUserActivity(ctx context.Context, evt UserActivityEvent) error
+}

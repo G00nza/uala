@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"uala/internal/domain"
@@ -47,6 +48,10 @@ func (m *mockFollowRepo) Exists(ctx context.Context, followerID, followeeID uuid
 
 func (m *mockFollowRepo) GetFollowers(ctx context.Context, followeeID uuid.UUID) ([]uuid.UUID, error) {
 	return m.followers, m.getFollowersErr
+}
+
+func (m *mockFollowRepo) GetActiveFollowers(_ context.Context, _ uuid.UUID, _ time.Time) ([]domain.FollowerActivity, error) {
+	return nil, nil
 }
 
 type mockTimelineRepo struct {

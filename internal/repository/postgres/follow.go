@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -63,4 +64,8 @@ func (r *FollowRepository) GetFollowers(ctx context.Context, followeeID uuid.UUI
 		ids = []uuid.UUID{}
 	}
 	return ids, rows.Err()
+}
+
+func (r *FollowRepository) GetActiveFollowers(ctx context.Context, followeeID uuid.UUID, activeSince time.Time) ([]domain.FollowerActivity, error) {
+	return []domain.FollowerActivity{}, nil
 }

@@ -17,3 +17,7 @@ type UserRepository interface {
 	Create(ctx context.Context, u *User) error
 	GetByID(ctx context.Context, id uuid.UUID) (*User, error)
 }
+
+type UserActivityRepository interface {
+	UpdateLastActive(ctx context.Context, userID uuid.UUID, lastActive time.Time) error
+}

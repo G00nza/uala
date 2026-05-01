@@ -27,6 +27,14 @@ func (s *stubFollowRepo) GetFollowers(_ context.Context, _ uuid.UUID) ([]uuid.UU
 	return s.followers, nil
 }
 
+func (s *stubFollowRepo) GetActiveFollowers(_ context.Context, _ uuid.UUID, _ time.Time) ([]domain.FollowerActivity, error) {
+	result := make([]domain.FollowerActivity, len(s.followers))
+	for i, id := range s.followers {
+		result[i] = domain.FollowerActivity{ID: id, LastActive: time.Now()}
+	}
+	return result, nil
+}
+
 // concurrentFanout records max concurrent calls to AppendTweet.
 type concurrentFanout struct {
 	mu          sync.Mutex
