@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -107,7 +108,7 @@ func (r *TimelineRepository) writeToRedis(ctx context.Context, userID uuid.UUID,
 	return r.rdb.HSet(ctx, dataKey, dataFields...).Err()
 }
 
-func (r *TimelineRepository) AppendTweet(ctx context.Context, userID uuid.UUID, item domain.TweetItem) error {
+func (r *TimelineRepository) AppendTweet(ctx context.Context, userID uuid.UUID, item domain.TweetItem, ttl time.Duration) error {
 	key := timelineKey(userID)
 	dataKey := timelineDataKey(userID)
 

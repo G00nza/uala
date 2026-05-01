@@ -17,6 +17,8 @@ import (
 
 const fanoutConcurrency = 100
 
+const defaultActivityTTL = 24 * time.Hour
+
 type Consumer struct {
 	conn           channeler
 	followRepo     domain.FollowRepository
@@ -26,6 +28,7 @@ type Consumer struct {
 	fanoutWorkers  int
 	retryPublisher domain.FanoutRetryPublisher
 	deadLetterPub  domain.FanoutRetryPublisher
+	activityTTL    time.Duration
 }
 
 func NewConsumer(
@@ -42,6 +45,7 @@ func NewConsumer(
 		userTweetsRepo: userTweetsRepo,
 		backfillLimit:  backfillLimit,
 		fanoutWorkers:  fanoutConcurrency,
+		activityTTL:    defaultActivityTTL,
 	}
 }
 
@@ -52,6 +56,11 @@ func (c *Consumer) WithRetryPublisher(p domain.FanoutRetryPublisher) *Consumer {
 
 func (c *Consumer) WithDeadLetterPublisher(p domain.FanoutRetryPublisher) *Consumer {
 	c.deadLetterPub = p
+	return c
+}
+
+func (c *Consumer) WithActivityTTL(d time.Duration) *Consumer {
+	c.activityTTL = d
 	return c
 }
 
@@ -176,7 +185,7 @@ func (c *Consumer) fanoutTweet(ctx context.Context, evt domain.TweetCreatedEvent
 		sem <- struct{}{}
 		g.Go(func() error {
 			defer func() { <-sem }()
-			if err := c.fanout.AppendTweet(gctx, fid, item); err != nil {
+			if err := c.fanout.AppendTweet(gctx, fid, item, c.activityTTL); err != nil {
 				log.Printf("rabbitmq: fanout tweet to %s: %v", fid, err)
 				if c.retryPublisher != nil {
 					if pubErr := c.retryPublisher.PublishFanoutRetry(ctx, domain.FanoutRetryEvent{
@@ -242,7 +251,7 @@ func (c *Consumer) handleFanoutRetry(ctx context.Context, d amqp.Delivery) (acke
 		return true, false
 	}
 
-	if err := c.fanout.AppendTweet(ctx, evt.FollowerID, evt.Tweet); err != nil {
+	if err := c.fanout.AppendTweet(ctx, evt.FollowerID, evt.Tweet, c.activityTTL); err != nil {
 		log.Printf("rabbitmq: retry AppendTweet for %s: %v", evt.FollowerID, err)
 		return false, true
 	}
@@ -267,7 +276,7 @@ func (c *Consumer) handleFollowCreated(ctx context.Context, d amqp.Delivery) {
 	}
 
 	for _, tweet := range tweets {
-		if err := c.fanout.AppendTweet(ctx, evt.FollowerID, tweet); err != nil {
+		if err := c.fanout.AppendTweet(ctx, evt.FollowerID, tweet, c.activityTTL); err != nil {
 			log.Printf("rabbitmq: backfill tweet to %s: %v", evt.FollowerID, err)
 		}
 	}

@@ -38,5 +38,5 @@ type TimelineRepository interface {
 }
 
 type TimelineFanout interface {
-	AppendTweet(ctx context.Context, userID uuid.UUID, item TweetItem) error
+	AppendTweet(ctx context.Context, userID uuid.UUID, item TweetItem, ttl time.Duration) error
 }

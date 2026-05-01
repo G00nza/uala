@@ -42,7 +42,7 @@ type concurrentFanout struct {
 	maxObserved int64
 }
 
-func (f *concurrentFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem) error {
+func (f *concurrentFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem, _ time.Duration) error {
 	cur := atomic.AddInt64(&f.active, 1)
 	f.mu.Lock()
 	if cur > f.maxObserved {
@@ -87,7 +87,7 @@ func TestHandleTweetCreated_FanoutIsConcurrent(t *testing.T) {
 // errorFanout always returns an error for AppendTweet.
 type errorFanout struct{}
 
-func (e *errorFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem) error {
+func (e *errorFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem, _ time.Duration) error {
 	return errors.New("redis unavailable")
 }
 
@@ -97,7 +97,7 @@ type partialErrorFanout struct {
 	calls     atomic.Int64
 }
 
-func (p *partialErrorFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem) error {
+func (p *partialErrorFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem, _ time.Duration) error {
 	if int(p.calls.Add(1)) <= p.failCount {
 		return errors.New("redis unavailable")
 	}
