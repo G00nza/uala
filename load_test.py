@@ -208,6 +208,76 @@ class Reporter:
                 print("  " + "  ".join(ep_parts), flush=True)
 
 
+def run_seed(config: "Config", state_path: str = "seed_state.json") -> "SeedState":
+    state = SeedState()
+
+    # 1. Crear 2 celebrities
+    for i in range(2):
+        conn = _new_conn(config)
+        _, _, body = do_request(conn, "POST", "/users", {"username": f"celebrity_{i}_{int(time.time())}"})
+        conn.close()
+        state.celebrity_ids.append(json.loads(body)["id"])
+    print(f"[seed] 2 celebrities creados: {state.celebrity_ids}")
+
+    # 2. Crear N usuarios normales en paralelo
+    created: List[Optional[str]] = [None] * config.users
+
+    def _create_user(idx: int) -> None:
+        conn = _new_conn(config)
+        try:
+            _, _, body = do_request(conn, "POST", "/users", {"username": f"user_{idx}_{int(time.time())}"})
+            created[idx] = json.loads(body)["id"]
+        finally:
+            conn.close()
+
+    print(f"[seed] Creando {config.users} usuarios...")
+    with ThreadPoolExecutor(max_workers=config.seed_workers) as ex:
+        list(ex.map(_create_user, range(config.users)))
+
+    state.user_ids = [uid for uid in created if uid]
+    print(f"[seed] {len(state.user_ids)} usuarios creados.")
+
+    # 3. Crear follows: cada usuario sigue celebrities + subconjunto aleatorio
+    def _create_follows(user_id: str) -> None:
+        conn = _new_conn(config)
+        try:
+            for celeb_id in state.celebrity_ids:
+                do_request(conn, "POST", "/follow", {"followee_id": celeb_id}, user_id=user_id)
+            peers = random.sample(
+                [uid for uid in state.user_ids if uid != user_id],
+                min(config.follows_per_user, len(state.user_ids) - 1),
+            )
+            for peer_id in peers:
+                do_request(conn, "POST", "/follow", {"followee_id": peer_id}, user_id=user_id)
+        finally:
+            conn.close()
+
+    print(f"[seed] Creando follows ({config.follows_per_user} por usuario)...")
+    with ThreadPoolExecutor(max_workers=config.seed_workers) as ex:
+        list(ex.map(_create_follows, state.user_ids))
+
+    # 4. Publicar tweets iniciales
+    def _create_tweets(user_id: str) -> None:
+        conn = _new_conn(config)
+        try:
+            for i in range(config.tweets_per_user):
+                do_request(
+                    conn, "POST", "/tweets",
+                    {"content": f"seed tweet {i} by {user_id[:8]}"},
+                    user_id=user_id,
+                )
+        finally:
+            conn.close()
+
+    print(f"[seed] Publicando {config.tweets_per_user} tweets por usuario...")
+    with ThreadPoolExecutor(max_workers=config.seed_workers) as ex:
+        list(ex.map(_create_tweets, state.user_ids))
+
+    state.save(state_path)
+    print(f"[seed] Completo. Estado guardado en {state_path}")
+    return state
+
+
 def write_results(
     collector: MetricsCollector,
     timestamp: str,

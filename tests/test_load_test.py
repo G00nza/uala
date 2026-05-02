@@ -230,5 +230,59 @@ class TestWriteResults(unittest.TestCase):
             self.assertIn("error_rate", content)
 
 
+from unittest.mock import patch
+from load_test import run_seed
+
+
+class TestRunSeed(unittest.TestCase):
+    def _make_responses(self, n_celebs, n_users, follows_per_user, tweets_per_user):
+        celeb_responses = [
+            (5, 201, json.dumps({"id": f"celeb-{i}"}).encode()) for i in range(n_celebs)
+        ]
+        user_responses = [
+            (5, 201, json.dumps({"id": f"user-{i}"}).encode()) for i in range(n_users)
+        ]
+        # Each user follows n_celebs celebrities + min(follows_per_user, n_users-1) peers
+        follows_count = n_users * (n_celebs + min(follows_per_user, n_users - 1))
+        follow_responses = [(5, 201, b"{}") for _ in range(follows_count)]
+        tweet_responses = [(5, 201, b"{}") for _ in range(n_users * tweets_per_user)]
+        return celeb_responses + user_responses + follow_responses + tweet_responses
+
+    def test_seed_creates_celebrities_and_users(self):
+        cfg = Config.from_args(FakeArgs())
+        cfg.users = 3
+        cfg.follows_per_user = 1
+        cfg.tweets_per_user = 1
+        cfg.seed_workers = 2
+
+        responses = iter(self._make_responses(2, 3, 1, 1))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "seed_state.json")
+            with patch("load_test.do_request", side_effect=lambda *a, **kw: next(responses)):
+                state = run_seed(cfg, state_path=state_path)
+            self.assertEqual(len(state.celebrity_ids), 2)
+            self.assertEqual(len(state.user_ids), 3)
+            self.assertTrue(os.path.exists(state_path))
+
+    def test_seed_saves_state_to_json(self):
+        cfg = Config.from_args(FakeArgs())
+        cfg.users = 2
+        cfg.follows_per_user = 1
+        cfg.tweets_per_user = 1
+        cfg.seed_workers = 2
+
+        responses = iter(self._make_responses(2, 2, 1, 1))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "seed_state.json")
+            with patch("load_test.do_request", side_effect=lambda *a, **kw: next(responses)):
+                run_seed(cfg, state_path=state_path)
+            loaded = SeedState.load(state_path)
+
+        self.assertEqual(loaded.celebrity_ids, ["celeb-0", "celeb-1"])
+        self.assertEqual(len(loaded.user_ids), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
