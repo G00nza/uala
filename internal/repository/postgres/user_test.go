@@ -54,3 +54,46 @@ func TestUserRepository_GetByID_NotFound(t *testing.T) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
+
+func TestUserRepository_UpdateLastActive_SetsValue(t *testing.T) {
+	r := setup(t)
+	u := seedUser(t, r.user, "active_user")
+
+	lastActive := time.Now().UTC().Truncate(time.Microsecond)
+	if err := r.user.UpdateLastActive(context.Background(), u.ID, lastActive); err != nil {
+		t.Fatalf("UpdateLastActive: %v", err)
+	}
+
+	var got time.Time
+	err := testDB.QueryRow(context.Background(),
+		`SELECT last_active FROM users WHERE id = $1`, u.ID,
+	).Scan(&got)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !got.Equal(lastActive) {
+		t.Errorf("want %v, got %v", lastActive, got)
+	}
+}
+
+func TestUserRepository_UpdateLastActive_IgnoresOlderTimestamp(t *testing.T) {
+	r := setup(t)
+	u := seedUser(t, r.user, "active_user2")
+
+	newer := time.Now().UTC().Truncate(time.Microsecond)
+	older := newer.Add(-1 * time.Hour)
+
+	_ = r.user.UpdateLastActive(context.Background(), u.ID, newer)
+	_ = r.user.UpdateLastActive(context.Background(), u.ID, older)
+
+	var got time.Time
+	err := testDB.QueryRow(context.Background(),
+		`SELECT last_active FROM users WHERE id = $1`, u.ID,
+	).Scan(&got)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !got.Equal(newer) {
+		t.Errorf("want newer timestamp %v, got %v", newer, got)
+	}
+}

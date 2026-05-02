@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,15 @@ func (r *UserRepository) Create(ctx context.Context, u *domain.User) error {
 		return err
 	}
 	return nil
+}
+
+func (r *UserRepository) UpdateLastActive(ctx context.Context, userID uuid.UUID, lastActive time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE users SET last_active = $1
+		 WHERE id = $2 AND (last_active IS NULL OR last_active < $1)`,
+		lastActive, userID,
+	)
+	return err
 }
 
 func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
