@@ -67,5 +67,29 @@ func (r *FollowRepository) GetFollowers(ctx context.Context, followeeID uuid.UUI
 }
 
 func (r *FollowRepository) GetActiveFollowers(ctx context.Context, followeeID uuid.UUID, activeSince time.Time) ([]domain.FollowerActivity, error) {
-	return []domain.FollowerActivity{}, nil
+	rows, err := r.db.Query(ctx,
+		`SELECT f.follower_id, u.last_active
+		 FROM follows f
+		 JOIN users u ON u.id = f.follower_id
+		 WHERE f.followee_id = $1
+		   AND u.last_active >= $2`,
+		followeeID, activeSince,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []domain.FollowerActivity
+	for rows.Next() {
+		var fa domain.FollowerActivity
+		if err := rows.Scan(&fa.ID, &fa.LastActive); err != nil {
+			return nil, err
+		}
+		result = append(result, fa)
+	}
+	if result == nil {
+		result = []domain.FollowerActivity{}
+	}
+	return result, rows.Err()
 }
