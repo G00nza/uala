@@ -46,10 +46,14 @@ func (m *mockFollowSvc) Follow(ctx context.Context, followerID, followeeID uuid.
 }
 
 type mockTimelineSvc struct {
-	items []domain.TweetItem
-	err   error
+	items          []domain.TweetItem
+	err            error
+	capturedAfter  *uuid.UUID
+	capturedBefore *uuid.UUID
 }
 
 func (m *mockTimelineSvc) GetTimeline(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error) {
+	m.capturedAfter = after
+	m.capturedBefore = before
 	return m.items, m.err
 }

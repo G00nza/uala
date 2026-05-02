@@ -35,11 +35,39 @@ func (h *TimelineHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	items, err := h.svc.GetTimeline(r.Context(), userID, nil, nil)
+
+	afterStr := r.URL.Query().Get("after")
+	beforeStr := r.URL.Query().Get("before")
+
+	if afterStr != "" && beforeStr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after and before are mutually exclusive"})
+		return
+	}
+
+	var after, before *uuid.UUID
+	if afterStr != "" {
+		id, err := uuid.Parse(afterStr)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after must be a valid UUID"})
+			return
+		}
+		after = &id
+	}
+	if beforeStr != "" {
+		id, err := uuid.Parse(beforeStr)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "before must be a valid UUID"})
+			return
+		}
+		before = &id
+	}
+
+	items, err := h.svc.GetTimeline(r.Context(), userID, after, before)
 	if err != nil {
 		writeJSON(w, domainErrToStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
+
 	resp := make([]tweetItemResponse, len(items))
 	for i, item := range items {
 		resp[i] = tweetItemResponse{
@@ -50,5 +78,18 @@ func (h *TimelineHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: item.CreatedAt,
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tweets": resp})
+
+	var nextCursor, prevCursor *string
+	if len(items) > 0 {
+		first := items[0].ID.String()
+		last := items[len(items)-1].ID.String()
+		prevCursor = &first
+		nextCursor = &last
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tweets":      resp,
+		"next_cursor": nextCursor,
+		"prev_cursor": prevCursor,
+	})
 }
