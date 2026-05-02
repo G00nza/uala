@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -272,4 +273,117 @@ type countingPgTimeline struct {
 func (m *countingPgTimeline) GetTimeline(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
 	*m.countPtr++
 	return m.items, nil
+}
+
+func TestRedisTimeline_AfterCursor_InRedis(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
+
+	base := time.Now().UTC()
+	t1 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "tweet1", CreatedAt: base.Add(-2 * time.Minute).Truncate(time.Second)}
+	t2 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "tweet2", CreatedAt: base.Add(-1 * time.Minute).Truncate(time.Second)}
+	t3 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "tweet3", CreatedAt: base.Truncate(time.Second)}
+
+	_ = repo.AppendTweet(context.Background(), userID, t1, 0)
+	_ = repo.AppendTweet(context.Background(), userID, t2, 0)
+	_ = repo.AppendTweet(context.Background(), userID, t3, 0)
+
+	// after=t3 → older than t3 → [t2, t1]
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, After: &t3.ID, Limit: 20})
+	if err != nil {
+		t.Fatalf("GetTimeline after: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if items[0].Content != "tweet2" {
+		t.Fatalf("want tweet2 first, got %s", items[0].Content)
+	}
+	if items[1].Content != "tweet1" {
+		t.Fatalf("want tweet1 second, got %s", items[1].Content)
+	}
+}
+
+func TestRedisTimeline_BeforeCursor_InRedis(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
+
+	base := time.Now().UTC()
+	t1 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "tweet1", CreatedAt: base.Add(-2 * time.Minute).Truncate(time.Second)}
+	t2 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "tweet2", CreatedAt: base.Add(-1 * time.Minute).Truncate(time.Second)}
+	t3 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "tweet3", CreatedAt: base.Truncate(time.Second)}
+
+	_ = repo.AppendTweet(context.Background(), userID, t1, 0)
+	_ = repo.AppendTweet(context.Background(), userID, t2, 0)
+	_ = repo.AppendTweet(context.Background(), userID, t3, 0)
+
+	// before=t1 → newer than t1 → [t3, t2] DESC
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Before: &t1.ID, Limit: 20})
+	if err != nil {
+		t.Fatalf("GetTimeline before: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if items[0].Content != "tweet3" {
+		t.Fatalf("want tweet3 first (newest), got %s", items[0].Content)
+	}
+	if items[1].Content != "tweet2" {
+		t.Fatalf("want tweet2 second, got %s", items[1].Content)
+	}
+}
+
+func TestRedisTimeline_CursorNotInRedis_FallsBackToPostgres(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	ghostID := uuid.New()
+
+	pgItems := []domain.TweetItem{
+		{ID: uuid.New(), UserID: uuid.New(), Username: "pg", Content: "from_pg", CreatedAt: time.Now().UTC().Truncate(time.Second)},
+	}
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: pgItems}, 500)
+
+	// Seed one tweet so the Redis key exists
+	seed := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "in_redis", CreatedAt: time.Now().UTC().Truncate(time.Second)}
+	_ = repo.AppendTweet(context.Background(), userID, seed, 0)
+
+	// Use a cursor NOT in Redis → fallback to Postgres
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, After: &ghostID, Limit: 20})
+	if err != nil {
+		t.Fatalf("GetTimeline: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item from postgres, got %d", len(items))
+	}
+	if items[0].Content != "from_pg" {
+		t.Fatalf("want 'from_pg', got %s", items[0].Content)
+	}
+}
+
+func TestRedisTimeline_FirstPage_ReturnsLimit(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
+
+	base := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		item := domain.TweetItem{
+			ID:        uuid.New(),
+			UserID:    uuid.New(),
+			Username:  "bob",
+			Content:   fmt.Sprintf("tweet%d", i),
+			CreatedAt: base.Add(time.Duration(i) * time.Second).Truncate(time.Second),
+		}
+		_ = repo.AppendTweet(context.Background(), userID, item, 0)
+	}
+
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 3})
+	if err != nil {
+		t.Fatalf("GetTimeline: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("want 3 items, got %d", len(items))
+	}
 }
