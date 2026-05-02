@@ -114,5 +114,75 @@ class TestPercentile(unittest.TestCase):
         self.assertEqual(_percentile([42], 99), 42)
 
 
+from load_test import MetricsCollector
+
+
+class TestMetricsCollector(unittest.TestCase):
+    def _make_result(self, endpoint, latency_ms, status_code=200, profile="always_on", t=None):
+        return RequestResult(
+            timestamp=t or time.time(),
+            endpoint=endpoint,
+            latency_ms=latency_ms,
+            status_code=status_code,
+            vu_profile=profile,
+        )
+
+    def test_snapshot_empty_returns_empty_dict(self):
+        c = MetricsCollector()
+        c.drain()
+        self.assertEqual(c.snapshot(), {})
+
+    def test_snapshot_counts_and_latencies(self):
+        c = MetricsCollector()
+        for i in range(1, 101):
+            c.add(self._make_result("timeline", i))
+        c.drain()
+        snap = c.snapshot()
+        self.assertEqual(snap["count"], 100)
+        self.assertAlmostEqual(snap["error_rate"], 0.0)
+        self.assertEqual(_percentile(snap["latencies"], 50), 50)
+        self.assertEqual(_percentile(snap["latencies"], 95), 95)
+
+    def test_snapshot_error_rate(self):
+        c = MetricsCollector()
+        for _ in range(80):
+            c.add(self._make_result("timeline", 10, 200))
+        for _ in range(20):
+            c.add(self._make_result("timeline", 10, 500))
+        c.drain()
+        snap = c.snapshot()
+        self.assertAlmostEqual(snap["error_rate"], 0.20)
+
+    def test_snapshot_by_endpoint_p95(self):
+        c = MetricsCollector()
+        for i in range(1, 101):
+            c.add(self._make_result("timeline", i))
+        for i in range(1, 51):
+            c.add(self._make_result("tweets", i * 2))
+        c.drain()
+        snap = c.snapshot()
+        self.assertIn("timeline", snap["by_endpoint"])
+        self.assertIn("tweets", snap["by_endpoint"])
+        self.assertNotIn("follow", snap["by_endpoint"])
+
+    def test_set_active_vus(self):
+        c = MetricsCollector()
+        c.set_active_vus(42)
+        c.add(self._make_result("timeline", 5))
+        c.drain()
+        snap = c.snapshot()
+        self.assertEqual(snap["active_vus"], 42)
+
+    def test_snapshot_since_filters_old_results(self):
+        c = MetricsCollector()
+        old_time = time.time() - 100
+        c.add(self._make_result("timeline", 999, t=old_time))
+        c.add(self._make_result("timeline", 10))
+        c.drain()
+        snap = c.snapshot(since=time.time() - 10)
+        self.assertEqual(snap["count"], 1)
+        self.assertEqual(snap["latencies"], [10])
+
+
 if __name__ == "__main__":
     unittest.main()

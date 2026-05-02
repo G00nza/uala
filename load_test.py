@@ -108,3 +108,52 @@ def _percentile(data: List[int], p: int) -> int:
     sorted_data = sorted(data)
     idx = max(0, int(len(sorted_data) * p / 100) - 1)
     return sorted_data[idx]
+
+
+class MetricsCollector:
+    def __init__(self) -> None:
+        self._q: "queue.Queue[RequestResult]" = queue.Queue()
+        self._results: List[RequestResult] = []
+        self._lock = threading.Lock()
+        self._active_vus = 0
+
+    def add(self, result: RequestResult) -> None:
+        self._q.put_nowait(result)
+
+    def drain(self) -> None:
+        while True:
+            try:
+                r = self._q.get_nowait()
+                with self._lock:
+                    self._results.append(r)
+            except queue.Empty:
+                break
+
+    def set_active_vus(self, n: int) -> None:
+        with self._lock:
+            self._active_vus = n
+
+    def snapshot(self, since: float = 0.0) -> dict:
+        with self._lock:
+            results = [r for r in self._results if r.timestamp >= since]
+            active = self._active_vus
+        if not results:
+            return {}
+        latencies = [r.latency_ms for r in results]
+        errors = sum(1 for r in results if r.status_code >= 400)
+        by_endpoint: dict = {}
+        for ep in ("timeline", "tweets", "follow"):
+            ep_lats = [r.latency_ms for r in results if r.endpoint == ep]
+            if ep_lats:
+                by_endpoint[ep] = {"p95": _percentile(ep_lats, 95)}
+        return {
+            "count": len(results),
+            "latencies": latencies,
+            "error_rate": errors / len(results),
+            "by_endpoint": by_endpoint,
+            "active_vus": active,
+        }
+
+    def all_results(self) -> List[RequestResult]:
+        with self._lock:
+            return list(self._results)
