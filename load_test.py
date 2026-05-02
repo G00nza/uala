@@ -76,3 +76,35 @@ class RequestResult:
     latency_ms: int
     status_code: int
     vu_profile: str    # "always_on" | "cycler" | "one_shot" | "seed"
+
+
+def _new_conn(config: "Config") -> http.client.HTTPConnection:
+    return http.client.HTTPConnection(config.host, config.port, timeout=10)
+
+
+def do_request(
+    conn: http.client.HTTPConnection,
+    method: str,
+    path: str,
+    body: Optional[dict] = None,
+    user_id: Optional[str] = None,
+) -> Tuple[int, int, bytes]:
+    """Returns (latency_ms, status_code, response_body)."""
+    headers = {"Content-Type": "application/json"}
+    if user_id:
+        headers["X-User-ID"] = user_id
+    encoded = json.dumps(body).encode() if body else None
+    t0 = time.monotonic()
+    conn.request(method, path, body=encoded, headers=headers)
+    resp = conn.getresponse()
+    resp_body = resp.read()
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    return latency_ms, resp.status, resp_body
+
+
+def _percentile(data: List[int], p: int) -> int:
+    if not data:
+        return 0
+    sorted_data = sorted(data)
+    idx = max(0, int(len(sorted_data) * p / 100) - 1)
+    return sorted_data[idx]

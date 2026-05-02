@@ -54,5 +54,65 @@ class TestSeedState(unittest.TestCase):
             os.unlink(path)
 
 
+from unittest.mock import MagicMock, patch
+from load_test import do_request, _percentile
+
+
+class TestDoRequest(unittest.TestCase):
+    def _make_conn(self, status: int, body: bytes) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.status = status
+        mock_resp.read.return_value = body
+        conn = MagicMock()
+        conn.getresponse.return_value = mock_resp
+        return conn
+
+    def test_get_request_no_body(self):
+        conn = self._make_conn(200, b'{"tweets":[]}')
+        latency, status, body = do_request(conn, "GET", "/timeline", user_id="abc-123")
+        conn.request.assert_called_once_with(
+            "GET", "/timeline", body=None,
+            headers={"Content-Type": "application/json", "X-User-ID": "abc-123"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'{"tweets":[]}')
+        self.assertGreaterEqual(latency, 0)
+
+    def test_post_request_with_body(self):
+        conn = self._make_conn(201, b'{"id":"xyz"}')
+        latency, status, body = do_request(
+            conn, "POST", "/tweets",
+            body={"content": "hello"},
+            user_id="abc-123",
+        )
+        args = conn.request.call_args
+        self.assertEqual(args[0][0], "POST")
+        self.assertEqual(args[0][1], "/tweets")
+        self.assertIn(b"hello", args[1]["body"])
+        self.assertEqual(status, 201)
+
+    def test_no_user_id_omits_header(self):
+        conn = self._make_conn(201, b'{"id":"u1"}')
+        do_request(conn, "POST", "/users", body={"username": "alice"})
+        headers = conn.request.call_args[1]["headers"]
+        self.assertNotIn("X-User-ID", headers)
+
+
+class TestPercentile(unittest.TestCase):
+    def test_p50_of_sorted_list(self):
+        data = list(range(1, 101))
+        self.assertEqual(_percentile(data, 50), 50)
+
+    def test_p95_of_sorted_list(self):
+        data = list(range(1, 101))
+        self.assertEqual(_percentile(data, 95), 95)
+
+    def test_empty_returns_zero(self):
+        self.assertEqual(_percentile([], 95), 0)
+
+    def test_single_element(self):
+        self.assertEqual(_percentile([42], 99), 42)
+
+
 if __name__ == "__main__":
     unittest.main()
