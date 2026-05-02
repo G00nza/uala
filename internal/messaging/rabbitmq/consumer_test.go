@@ -54,19 +54,29 @@ func (f *concurrentFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.
 	return nil
 }
 
+func makeActiveFollowers(ids []uuid.UUID) []domain.FollowerActivity {
+	result := make([]domain.FollowerActivity, len(ids))
+	for i, id := range ids {
+		result[i] = domain.FollowerActivity{ID: id, LastActive: time.Now()}
+	}
+	return result
+}
+
 func TestHandleTweetCreated_FanoutIsConcurrent(t *testing.T) {
 	const numFollowers = 50
 
-	followers := make([]uuid.UUID, numFollowers)
-	for i := range followers {
-		followers[i] = uuid.New()
+	ids := make([]uuid.UUID, numFollowers)
+	for i := range ids {
+		ids[i] = uuid.New()
 	}
+	followers := makeActiveFollowers(ids)
 
 	fanout := &concurrentFanout{}
 	c := &Consumer{
-		followRepo:    &stubFollowRepo{followers: followers},
+		followRepo:    &stubFollowRepo{followers: ids},
 		fanout:        fanout,
 		fanoutWorkers: fanoutConcurrency,
+		activityTTL:   24 * time.Hour,
 	}
 
 	evt := domain.TweetCreatedEvent{
@@ -105,8 +115,8 @@ func (p *partialErrorFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domai
 }
 
 func TestFanoutTweet_AllFail_ReturnsError(t *testing.T) {
-	followers := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
-	c := &Consumer{fanout: &errorFanout{}, fanoutWorkers: fanoutConcurrency}
+	followers := makeActiveFollowers([]uuid.UUID{uuid.New(), uuid.New(), uuid.New()})
+	c := &Consumer{fanout: &errorFanout{}, fanoutWorkers: fanoutConcurrency, activityTTL: 24 * time.Hour}
 
 	evt := domain.TweetCreatedEvent{TweetID: uuid.New(), UserID: uuid.New(), CreatedAt: time.Now()}
 	err := c.fanoutTweet(context.Background(), evt, followers)
@@ -131,13 +141,14 @@ func (r *recordingRetryPublisher) PublishFanoutRetry(_ context.Context, evt doma
 
 func TestFanoutTweet_PublishesRetryOnAppendFailure(t *testing.T) {
 	followerID := uuid.New()
-	followers := []uuid.UUID{followerID}
+	followers := makeActiveFollowers([]uuid.UUID{followerID})
 
 	retryPub := &recordingRetryPublisher{}
 	c := &Consumer{
 		fanout:         &errorFanout{},
 		retryPublisher: retryPub,
 		fanoutWorkers:  fanoutConcurrency,
+		activityTTL:    24 * time.Hour,
 	}
 
 	evt := domain.TweetCreatedEvent{
@@ -162,12 +173,13 @@ func TestFanoutTweet_PublishesRetryOnAppendFailure(t *testing.T) {
 }
 
 func TestFanoutTweet_CountsRetryPublishAsHandled(t *testing.T) {
-	followers := []uuid.UUID{uuid.New(), uuid.New()}
+	followers := makeActiveFollowers([]uuid.UUID{uuid.New(), uuid.New()})
 
 	c := &Consumer{
 		fanout:         &errorFanout{},
 		retryPublisher: &recordingRetryPublisher{},
 		fanoutWorkers:  fanoutConcurrency,
+		activityTTL:    24 * time.Hour,
 	}
 
 	evt := domain.TweetCreatedEvent{TweetID: uuid.New(), UserID: uuid.New(), CreatedAt: time.Now()}
@@ -179,9 +191,9 @@ func TestFanoutTweet_CountsRetryPublishAsHandled(t *testing.T) {
 }
 
 func TestFanoutTweet_PartialFail_ReturnsNil(t *testing.T) {
-	followers := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+	followers := makeActiveFollowers([]uuid.UUID{uuid.New(), uuid.New(), uuid.New()})
 	// first 2 fail, last 1 succeeds
-	c := &Consumer{fanout: &partialErrorFanout{failCount: 2}, fanoutWorkers: fanoutConcurrency}
+	c := &Consumer{fanout: &partialErrorFanout{failCount: 2}, fanoutWorkers: fanoutConcurrency, activityTTL: 24 * time.Hour}
 
 	evt := domain.TweetCreatedEvent{TweetID: uuid.New(), UserID: uuid.New(), CreatedAt: time.Now()}
 	err := c.fanoutTweet(context.Background(), evt, followers)
@@ -189,6 +201,40 @@ func TestFanoutTweet_PartialFail_ReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil when at least one AppendTweet succeeds, got %v", err)
 	}
+}
+
+func TestFanoutTweet_AllExpiredFollowers_ReturnsNil(t *testing.T) {
+	// followers whose last_active puts remaining TTL at 0 or negative
+	expired := []domain.FollowerActivity{
+		{ID: uuid.New(), LastActive: time.Now().Add(-25 * time.Hour)},
+		{ID: uuid.New(), LastActive: time.Now().Add(-48 * time.Hour)},
+	}
+	called := false
+	c := &Consumer{
+		fanout: &trackingFanout{onCall: func() { called = true }},
+		fanoutWorkers: fanoutConcurrency,
+		activityTTL:   24 * time.Hour,
+	}
+
+	evt := domain.TweetCreatedEvent{TweetID: uuid.New(), UserID: uuid.New(), CreatedAt: time.Now()}
+	err := c.fanoutTweet(context.Background(), evt, expired)
+
+	if err != nil {
+		t.Errorf("expected nil when all followers are expired, got %v", err)
+	}
+	if called {
+		t.Error("expected AppendTweet NOT called for expired followers")
+	}
+}
+
+// trackingFanout calls onCall for every AppendTweet invocation.
+type trackingFanout struct {
+	onCall func()
+}
+
+func (f *trackingFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem, _ time.Duration) error {
+	f.onCall()
+	return nil
 }
 
 func makeDelivery(body []byte, xDeathCount int64) amqp.Delivery {

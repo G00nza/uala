@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/sync/errgroup"
 	"uala/internal/domain"
@@ -162,9 +161,10 @@ func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
 	}
 
 	start := time.Now()
-	followers, err := c.followRepo.GetFollowers(ctx, evt.UserID)
+	activeSince := time.Now().Add(-c.activityTTL)
+	followers, err := c.followRepo.GetActiveFollowers(ctx, evt.UserID, activeSince)
 	if err != nil {
-		log.Printf("rabbitmq: get followers for %s: %v", evt.UserID, err)
+		log.Printf("rabbitmq: get active followers for %s: %v", evt.UserID, err)
 		metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetCreated).Inc()
 		_ = d.Nack(false, true)
 		return
@@ -182,7 +182,7 @@ func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
 	_ = d.Ack(false)
 }
 
-func (c *Consumer) fanoutTweet(ctx context.Context, evt domain.TweetCreatedEvent, followers []uuid.UUID) error {
+func (c *Consumer) fanoutTweet(ctx context.Context, evt domain.TweetCreatedEvent, followers []domain.FollowerActivity) error {
 	item := domain.TweetItem{
 		ID:        evt.TweetID,
 		UserID:    evt.UserID,
@@ -192,17 +192,24 @@ func (c *Consumer) fanoutTweet(ctx context.Context, evt domain.TweetCreatedEvent
 	}
 
 	var (
-		sem     = make(chan struct{}, c.fanoutWorkers)
-		g, gctx = errgroup.WithContext(ctx)
-		handled atomic.Int64
+		sem      = make(chan struct{}, c.fanoutWorkers)
+		g, gctx  = errgroup.WithContext(ctx)
+		handled  atomic.Int64
+		eligible atomic.Int64
 	)
 
-	for _, followerID := range followers {
-		fid := followerID
+	for _, fa := range followers {
+		remaining := c.activityTTL - time.Since(fa.LastActive)
+		if remaining <= 0 {
+			continue
+		}
+		eligible.Add(1)
+		fid := fa.ID
+		ttl := remaining
 		sem <- struct{}{}
 		g.Go(func() error {
 			defer func() { <-sem }()
-			if err := c.fanout.AppendTweet(gctx, fid, item, c.activityTTL); err != nil {
+			if err := c.fanout.AppendTweet(gctx, fid, item, ttl); err != nil {
 				log.Printf("rabbitmq: fanout tweet to %s: %v", fid, err)
 				if c.retryPublisher != nil {
 					if pubErr := c.retryPublisher.PublishFanoutRetry(ctx, domain.FanoutRetryEvent{
@@ -223,7 +230,7 @@ func (c *Consumer) fanoutTweet(ctx context.Context, evt domain.TweetCreatedEvent
 
 	_ = g.Wait()
 
-	if len(followers) > 0 && handled.Load() == 0 {
+	if eligible.Load() > 0 && handled.Load() == 0 {
 		return errors.New("all fanout writes failed and no retries enqueued")
 	}
 	return nil
