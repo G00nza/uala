@@ -1,7 +1,7 @@
-.PHONY: up down run migrate test
+.PHONY: up down run migrate test test-integration
 
 up:
-	docker-compose up -d
+	docker-compose up -d --wait
 	go run ./cmd/api/...
 
 down:
@@ -15,3 +15,6 @@ migrate:
 
 test:
 	go test ./...
+
+test-integration:
+	INTEGRATION=1 go test ./...

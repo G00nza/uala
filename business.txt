@@ -19,3 +19,16 @@ ASSUMPTIONS DE NEGOCIO
 
 6. Los usernames son únicos. Intentar crear un usuario con un username
    ya existente devuelve 409.
+
+7. El fanout de tweets es selectivo: solo los followers que estuvieron
+   activos en la última ventana de ACTIVITY_TTL (default 24h) reciben el
+   tweet en su timeline en tiempo real (fan-out on write). Un follower
+   inactivo no recibe el push; cuando vuelva a consultar su timeline, los
+   tweets se recuperan directamente desde Postgres (fan-out on read como
+   fallback). Esto resuelve el "celebrity problem": un usuario con millones
+   de followers no genera millones de escrituras si la mayoría son inactivos.
+
+8. La actividad de un usuario se actualiza cada vez que consulta su timeline
+   (GET /timeline). Este evento es asíncrono (vía RabbitMQ) y usa una guarda
+   monótona: solo se actualiza last_active si el timestamp recibido es más
+   nuevo que el almacenado.

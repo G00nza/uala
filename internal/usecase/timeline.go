@@ -2,7 +2,7 @@ package usecase
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,7 +41,7 @@ func (uc *TimelineUseCase) GetTimeline(ctx context.Context, userID uuid.UUID, af
 		evt := domain.UserActivityEvent{UserID: userID, LastActive: time.Now()}
 		go func() {
 			if pubErr := uc.activityPub.PublishUserActivity(context.Background(), evt); pubErr != nil {
-				log.Printf("usecase: publish user activity for %s: %v", userID, pubErr)
+				slog.Error("usecase: publish user activity", "user_id", userID, "err", pubErr)
 			}
 		}()
 	}

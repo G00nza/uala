@@ -2,6 +2,8 @@
 
 Implementación de una plataforma similar a Twitter: publicación de tweets, follows y timeline personalizado. Kata técnica desarrollada en Go con arquitectura limpia.
 
+**Documentación técnica:** [Arquitectura](docs/Arquitectura.md) · [Decisiones de diseño](docs/Decisiones-de-diseño.md) · [Observabilidad](docs/Observabilidad.md) · [OpenAPI](docs/api/openapi.yaml)
+
 ---
 
 ## Requisitos previos
