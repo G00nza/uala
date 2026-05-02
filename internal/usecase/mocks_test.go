@@ -82,3 +82,13 @@ func (m *mockFollowPublisher) PublishFollowCreated(ctx context.Context, evt doma
 	m.calls = append(m.calls, evt)
 	return m.publishErr
 }
+
+type mockUserActivityPublisher struct {
+	publishErr error
+	calls      []domain.UserActivityEvent
+}
+
+func (m *mockUserActivityPublisher) PublishUserActivity(ctx context.Context, evt domain.UserActivityEvent) error {
+	m.calls = append(m.calls, evt)
+	return m.publishErr
+}
