@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"slices"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"uala/internal/domain"
 )
@@ -45,6 +47,17 @@ func (r *TimelineRepository) GetLatestByUser(ctx context.Context, userID uuid.UU
 }
 
 func (r *TimelineRepository) GetTimeline(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+	switch {
+	case q.After != nil:
+		return r.getTimelineAfter(ctx, q)
+	case q.Before != nil:
+		return r.getTimelineBefore(ctx, q)
+	default:
+		return r.getTimelineFirst(ctx, q)
+	}
+}
+
+func (r *TimelineRepository) getTimelineFirst(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT t.id, t.user_id, u.username, t.content, t.created_at
 		FROM follows f
@@ -58,7 +71,51 @@ func (r *TimelineRepository) GetTimeline(ctx context.Context, q domain.TimelineQ
 		return nil, err
 	}
 	defer rows.Close()
+	return scanTimeline(rows)
+}
 
+func (r *TimelineRepository) getTimelineAfter(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT t.id, t.user_id, u.username, t.content, t.created_at
+		FROM follows f
+		JOIN tweets t ON t.user_id = f.followee_id
+		JOIN users u ON u.id = t.user_id
+		WHERE f.follower_id = $1
+		  AND t.created_at < (SELECT created_at FROM tweets WHERE id = $2)
+		ORDER BY t.created_at DESC
+		LIMIT $3
+	`, q.UserID, q.After, q.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTimeline(rows)
+}
+
+func (r *TimelineRepository) getTimelineBefore(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT t.id, t.user_id, u.username, t.content, t.created_at
+		FROM follows f
+		JOIN tweets t ON t.user_id = f.followee_id
+		JOIN users u ON u.id = t.user_id
+		WHERE f.follower_id = $1
+		  AND t.created_at > (SELECT created_at FROM tweets WHERE id = $2)
+		ORDER BY t.created_at ASC
+		LIMIT $3
+	`, q.UserID, q.Before, q.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items, err := scanTimeline(rows)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(items)
+	return items, nil
+}
+
+func scanTimeline(rows pgx.Rows) ([]domain.TweetItem, error) {
 	var items []domain.TweetItem
 	for rows.Next() {
 		var item domain.TweetItem
