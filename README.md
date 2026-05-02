@@ -18,10 +18,13 @@ Implementación de una plataforma similar a Twitter: publicación de tweets, fol
 # 1. Copiar variables de entorno
 cp .env.example .env
 
-# 2. Levantar la infraestructura (Postgres, Redis, RabbitMQ, Prometheus, Grafana)
+# 2. Levantar la infraestructura y la aplicación
 make up
+```
 
-# 3. Correr la aplicación
+Para reiniciar solo la aplicación sin tocar la infraestructura:
+
+```bash
 make run
 ```
 
@@ -39,6 +42,7 @@ La API queda disponible en `http://localhost:8080`.
 | `PORT` | `8080` | Puerto HTTP de la aplicación |
 | `TIMELINE_LIMIT` | `500` | Cantidad máxima de tweets almacenados por usuario en Redis |
 | `FOLLOW_BACKFILL_LIMIT` | `20` | Cantidad máxima de tweets a backfillear al seguir un usuario nuevo |
+| `ACTIVITY_TTL` | `24h` | Ventana de actividad de usuario; determina qué followers reciben fanout y el TTL de las keys de Redis |
 
 ---
 

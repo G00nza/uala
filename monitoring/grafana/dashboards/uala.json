@@ -9,12 +9,16 @@
   "links": [],
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "HTTP",
+      "type": "row"
+    },
+    {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": { "unit": "s" },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "id": 1,
       "options": { "legend": { "calcs": ["p50", "p95", "p99"], "displayMode": "table", "placement": "bottom" } },
       "targets": [
@@ -31,17 +35,73 @@
           "legendFormat": "p99 {{path}}"
         }
       ],
-      "title": "HTTP Latency p50/p95/p99 by Endpoint",
+      "title": "Latency p50/p95/p99 by Endpoint",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "sum by (path, status) (rate(http_requests_total[5m]))",
+          "legendFormat": "{{path}} {{status}}"
+        }
+      ],
+      "title": "Request Rate by Endpoint & Status",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 101,
+      "title": "RabbitMQ",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "rabbitmq_queue_depth",
+          "legendFormat": "{{queue}}"
+        }
+      ],
+      "title": "Queue Depth",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "id": 2,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "id": 5,
       "targets": [
         {
-          "expr": "rate(timeline_cache_hits_total[5m]) / (rate(timeline_cache_hits_total[5m]) + rate(timeline_cache_misses_total[5m]))",
+          "expr": "sum by (queue) (rate(rabbitmq_messages_processed_total[5m])) / clamp_min(sum by (queue) (rate(rabbitmq_messages_processed_total[5m])) + sum by (queue) (rate(rabbitmq_messages_failed_total[5m])), 1e-9)",
+          "legendFormat": "{{queue}}"
+        }
+      ],
+      "title": "Consumer Success Rate",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 102,
+      "title": "Cache & Fanout",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "rate(timeline_cache_hits_total[5m]) / clamp_min(rate(timeline_cache_hits_total[5m]) + rate(timeline_cache_misses_total[5m]), 1e-9)",
           "legendFormat": "Cache Hit Rate"
         }
       ],
@@ -50,30 +110,98 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "id": 3,
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["p50", "p95", "p99"], "displayMode": "table", "placement": "bottom" } },
       "targets": [
         {
-          "expr": "rabbitmq_queue_depth",
-          "legendFormat": "{{queue}}"
+          "expr": "histogram_quantile(0.50, rate(fanout_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(fanout_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(fanout_duration_seconds_bucket[5m]))",
+          "legendFormat": "p99"
         }
       ],
-      "title": "RabbitMQ Queue Depth",
+      "title": "Fanout Duration p50/p95/p99",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "id": 4,
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "id": 10,
       "targets": [
         {
-          "expr": "rate(rabbitmq_messages_processed_total[5m]) / (rate(rabbitmq_messages_processed_total[5m]) + rate(rabbitmq_messages_failed_total[5m]))",
-          "legendFormat": "Success Rate {{queue}}"
+          "expr": "sum(increase(fanout_dead_letter_total[5m]))",
+          "legendFormat": "Dead Letters (5m)"
         }
       ],
-      "title": "RabbitMQ Consumer Success Rate",
+      "title": "Fanout Dead Letters",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+      "id": 103,
+      "title": "Base de Datos",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "id": 7,
+      "options": { "legend": { "calcs": ["p50", "p95", "p99"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "p50 {{operation}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "p95 {{operation}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "p99 {{operation}}"
+        }
+      ],
+      "title": "Query Duration by Operation",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 36 },
+      "id": 8,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "targets": [
+        {
+          "expr": "db_connections_active",
+          "legendFormat": "Active Connections"
+        }
+      ],
+      "title": "Active Connections",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 36 },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "sum by (type) (rate(db_errors_total[5m]))",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "title": "Error Rate by Type",
       "type": "timeseries"
     }
   ],
@@ -86,5 +214,5 @@
   "timezone": "browser",
   "title": "Uala — System Metrics",
   "uid": "uala-metrics",
-  "version": 1
+  "version": 3
 }

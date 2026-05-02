@@ -1,52 +1,48 @@
 # Trade-off: Redis Timeline Storage
 
-## Decisión adoptada
+## Decisión actual (post celebrity fanout)
 
-El timeline de cada usuario se almacena en Redis como un **Sorted Set** donde:
-- **score:** unix timestamp del tweet
-- **member:** JSON completo del tweet (mismo contenido que en PostgreSQL)
+El timeline de cada usuario se almacena en Redis usando **dos estructuras separadas**:
+
+```
+timeline:{user_id}       →  Sorted Set  (score: unix timestamp, member: tweet_id)
+timeline:data:{user_id}  →  Hash        (field: tweet_id, value: JSON del tweet)
+```
+
+La lectura combina `ZREVRANGE` para obtener los IDs ordenados y `HMGET` para recuperar el contenido.
+
+### Por qué se migró a esta estructura
+
+Durante iter-2 se almacenaba el JSON completo del tweet como member del Sorted Set. Al introducir el fanout filtrado por actividad (celebrity fanout), cada tweet se escribe múltiples veces — una por follower activo. Con JSON completo como member, cada escritura duplica el payload completo. Con IDs como member y un Hash compartido, el contenido del tweet se almacena una sola vez por key de usuario (`HSetNX` es idempotente).
+
+### Comportamiento de TTL
+
+- `AppendTweet` usa `ExpireNX` para setear el TTL de la ventana de actividad solo en keys nuevas (no sobreescribe TTL existente).
+- `GetTimeline` usa `Expire` para renovar el TTL al valor completo de `ACTIVITY_TTL` en cada lectura.
+- Las keys expiran naturalmente cuando el usuario pasa a inactivo, liberando memoria sin eviction explícita.
+
+---
+
+## Estrategia original (iter-2)
+
+En iter-2 se guardaba el JSON completo del tweet como member del Sorted Set:
 
 ```
 timeline:{user_id} → ZREVRANGE → devuelve tweets completos en una sola operación
 ```
 
-### Por qué
+### Ventajas que tenía
 
-- `GET /timeline` requiere una única llamada a Redis, sin lookups secundarios
-- Los tweets son inmutables en este sistema, por lo que la duplicación no genera inconsistencias
-- Alineado con el requerimiento de optimización para lecturas
+- `GET /timeline` requería una única llamada a Redis.
+- Implementación más simple.
 
----
+### Por qué se abandonó
 
-## Alternativa considerada: IDs + bulk get
-
-Guardar solo el `tweet_id` como member y hacer un `MGET` para obtener el contenido de cada tweet desde un hash separado en Redis.
-
-```
-timeline:{user_id}   → Sorted Set de tweet_ids
-tweet:{tweet_id}     → Hash con el contenido del tweet
-
-GET /timeline:
-  1. ZREVRANGE timeline:{user_id} → lista de IDs
-  2. MGET tweet:{id1} tweet:{id2} ... → contenido de cada tweet
-```
-
-### Ventajas
-
-- Menor uso de memoria: el contenido del tweet se almacena una sola vez, independientemente de cuántos seguidores tenga el autor
-- Si en el futuro los tweets fueran editables, solo habría que actualizar `tweet:{tweet_id}` sin tocar ningún timeline
-
-### Desventajas
-
-- Dos operaciones por timeline request en lugar de una
-- Mayor complejidad de implementación
+- Con fanout por actividad, cada tweet se escribe N veces (una por follower activo). El JSON completo como member implica duplicar el payload en cada escritura.
+- La estructura ID + Hash permite `HSetNX` idempotente: si el tweet ya existe en el hash de un usuario, no se reescribe.
 
 ---
 
-## Cuándo migrar
+## Cuándo migrar nuevamente
 
-Considerar esta migración cuando:
-- La memoria de Redis sea un constraint medible (usuarios con decenas de miles de seguidores y tweets frecuentes)
-- Se introduzca edición de tweets en el sistema
-
-Hasta entonces, la decisión adoptada es la más simple y performante para el caso de uso actual.
+Si el sistema introduce edición de tweets y la consistencia cache-source se vuelve crítica, considerar invalidación del hash en lugar de TTL pasivo.

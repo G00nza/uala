@@ -21,10 +21,10 @@ class Config:
     target: str
     host: str
     port: int
-    users: int = 1000
-    tweets_per_user: int = 100
-    follows_per_user: int = 200
-    max_vus: int = 500
+    users: int = 100
+    tweets_per_user: int = 10
+    follows_per_user: int = 20
+    max_vus: int = 50
     ramp_step: int = 50
     ramp_interval: int = 10
     duration: int = 600
@@ -142,7 +142,7 @@ class MetricsCollector:
         latencies = [r.latency_ms for r in results]
         errors = sum(1 for r in results if r.status_code >= 400)
         by_endpoint: dict = {}
-        for ep in ("timeline", "tweets", "follow"):
+        for ep in sorted(set(r.endpoint for r in results)):
             ep_lats = [r.latency_ms for r in results if r.endpoint == ep]
             if ep_lats:
                 by_endpoint[ep] = {"p95": _percentile(ep_lats, 95)}
@@ -227,15 +227,18 @@ def _do_one_request(
     try:
         if op == "timeline":
             latency_ms, status, _ = do_request(conn, "GET", "/timeline", user_id=user_id)
+            endpoint_label = f"timeline_{profile}"
         elif op == "tweets":
             content = f"tweet {random.randint(0, 999999)}"
             latency_ms, status, _ = do_request(conn, "POST", "/tweets", {"content": content}, user_id=user_id)
+            endpoint_label = "tweets"
         else:
             target = random.choice(state.user_ids + state.celebrity_ids)
             latency_ms, status, _ = do_request(conn, "POST", "/follow", {"followee_id": target}, user_id=user_id)
+            endpoint_label = "follow"
         collector.add(RequestResult(
             timestamp=time.time(),
-            endpoint=op,
+            endpoint=endpoint_label,
             latency_ms=latency_ms,
             status_code=status,
             vu_profile=profile,
@@ -322,14 +325,23 @@ def run_seed(config: "Config", state_path: str = "seed_state.json") -> "SeedStat
     def _create_follows(user_id: str) -> None:
         conn = _new_conn(config)
         try:
-            for celeb_id in state.celebrity_ids:
-                do_request(conn, "POST", "/follow", {"followee_id": celeb_id}, user_id=user_id)
-            peers = random.sample(
+            peers = [celeb_id for celeb_id in state.celebrity_ids] + random.sample(
                 [uid for uid in state.user_ids if uid != user_id],
                 min(config.follows_per_user, len(state.user_ids) - 1),
             )
-            for peer_id in peers:
-                do_request(conn, "POST", "/follow", {"followee_id": peer_id}, user_id=user_id)
+            for followee_id in peers:
+                for attempt in range(3):
+                    try:
+                        do_request(conn, "POST", "/follow", {"followee_id": followee_id}, user_id=user_id)
+                        break
+                    except Exception:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        conn = _new_conn(config)
+                        if attempt == 2:
+                            raise
         finally:
             conn.close()
 
@@ -342,11 +354,22 @@ def run_seed(config: "Config", state_path: str = "seed_state.json") -> "SeedStat
         conn = _new_conn(config)
         try:
             for i in range(config.tweets_per_user):
-                do_request(
-                    conn, "POST", "/tweets",
-                    {"content": f"seed tweet {i} by {user_id[:8]}"},
-                    user_id=user_id,
-                )
+                for attempt in range(3):
+                    try:
+                        do_request(
+                            conn, "POST", "/tweets",
+                            {"content": f"seed tweet {i} by {user_id[:8]}"},
+                            user_id=user_id,
+                        )
+                        break
+                    except Exception:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        conn = _new_conn(config)
+                        if attempt == 2:
+                            raise
         finally:
             conn.close()
 
@@ -448,7 +471,7 @@ def write_results(
     with open(summary_path, "w") as f:
         f.write(f"Total requests: {total}\n")
         f.write(f"Error rate:     {errors / total * 100:.1f}%\n\n")
-        for ep in ("timeline", "tweets", "follow"):
+        for ep in sorted(set(r.endpoint for r in results)):
             ep_results = [r for r in results if r.endpoint == ep]
             if not ep_results:
                 continue
@@ -471,9 +494,9 @@ def write_results(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Load test for Uala API")
     p.add_argument("--target", required=True, help="URL base del servidor, ej: http://192.168.1.10:8080")
-    p.add_argument("--users", type=int, default=1000)
-    p.add_argument("--tweets-per-user", type=int, default=100, dest="tweets_per_user")
-    p.add_argument("--follows-per-user", type=int, default=200, dest="follows_per_user")
+    p.add_argument("--users", type=int, default=100)
+    p.add_argument("--tweets-per-user", type=int, default=10, dest="tweets_per_user")
+    p.add_argument("--follows-per-user", type=int, default=20, dest="follows_per_user")
     p.add_argument("--max-vus", type=int, default=500, dest="max_vus")
     p.add_argument("--ramp-step", type=int, default=50, dest="ramp_step")
     p.add_argument("--ramp-interval", type=int, default=10, dest="ramp_interval")

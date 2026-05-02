@@ -2,6 +2,7 @@
 
 up:
 	docker-compose up -d
+	go run ./cmd/api/...
 
 down:
 	docker-compose down

@@ -3,28 +3,18 @@ package rabbitmq
 import (
 	"context"
 	"encoding/json"
-	"sync"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"uala/internal/domain"
 )
 
-// amqpChannel is the subset of *amqp.Channel the publisher uses.
-type amqpChannel interface {
-	Publish(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
-	Close() error
-}
-
 type Publisher struct {
-	openCh func() (amqpChannel, error)
-	mu     sync.Mutex
-	ch     amqpChannel
+	conn channeler
 }
 
 func NewPublisher(conn channeler) *Publisher {
-	return &Publisher{
-		openCh: func() (amqpChannel, error) { return conn.Channel() },
-	}
+	return &Publisher{conn: conn}
 }
 
 func (p *Publisher) PublishTweetCreated(ctx context.Context, evt domain.TweetCreatedEvent) error {
@@ -53,27 +43,28 @@ func (p *Publisher) publishToExchange(exchange, key string, payload any) error {
 		return err
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.ch == nil {
-		ch, err := p.openCh()
-		if err != nil {
-			return err
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
 		}
-		p.ch = ch
+		ch, err := p.conn.Channel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		lastErr = ch.Publish(exchange, key, false, false, amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+		})
+		ch.Close()
+		if lastErr == nil {
+			return nil
+		}
 	}
-
-	if err := p.ch.Publish(exchange, key, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		Body:         body,
-	}); err != nil {
-		p.ch.Close()
-		p.ch = nil
-		return err
-	}
-	return nil
+	return lastErr
 }
 
 // DeadLetterPublisher adapta Publisher para implementar domain.FanoutRetryPublisher
