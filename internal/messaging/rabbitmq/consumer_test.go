@@ -277,3 +277,75 @@ func TestHandleFanoutRetry_DeadLettersAt10(t *testing.T) {
 		t.Errorf("dead letter event has wrong followerID")
 	}
 }
+
+// recordingUserActivityRepo records calls to UpdateLastActive.
+type recordingUserActivityRepo struct {
+	mu     sync.Mutex
+	calls  []domain.UserActivityEvent
+	retErr error
+}
+
+func (r *recordingUserActivityRepo) UpdateLastActive(_ context.Context, userID uuid.UUID, lastActive time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, domain.UserActivityEvent{UserID: userID, LastActive: lastActive})
+	return r.retErr
+}
+
+func TestHandleUserActivity_AcksOnSuccess(t *testing.T) {
+	repo := &recordingUserActivityRepo{}
+	c := &Consumer{userActivityRepo: repo}
+
+	evt := domain.UserActivityEvent{UserID: uuid.New(), LastActive: time.Now()}
+	body, _ := json.Marshal(evt)
+	d := amqp.Delivery{Body: body}
+
+	acked, nacked := c.handleUserActivity(context.Background(), d)
+
+	if !acked {
+		t.Error("expected Ack on success")
+	}
+	if nacked {
+		t.Error("expected no Nack on success")
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.calls) != 1 {
+		t.Fatalf("want 1 UpdateLastActive call, got %d", len(repo.calls))
+	}
+	if repo.calls[0].UserID != evt.UserID {
+		t.Errorf("wrong UserID: want %s, got %s", evt.UserID, repo.calls[0].UserID)
+	}
+}
+
+func TestHandleUserActivity_NacksOnRepoError(t *testing.T) {
+	repo := &recordingUserActivityRepo{retErr: errors.New("db error")}
+	c := &Consumer{userActivityRepo: repo}
+
+	evt := domain.UserActivityEvent{UserID: uuid.New(), LastActive: time.Now()}
+	body, _ := json.Marshal(evt)
+	d := amqp.Delivery{Body: body}
+
+	acked, nacked := c.handleUserActivity(context.Background(), d)
+
+	if acked {
+		t.Error("expected no Ack on repo error")
+	}
+	if !nacked {
+		t.Error("expected Nack on repo error")
+	}
+}
+
+func TestHandleUserActivity_NacksOnBadJSON(t *testing.T) {
+	c := &Consumer{}
+	d := amqp.Delivery{Body: []byte("not-json")}
+
+	acked, nacked := c.handleUserActivity(context.Background(), d)
+
+	if acked {
+		t.Error("expected no Ack on bad JSON")
+	}
+	if !nacked {
+		t.Error("expected Nack on bad JSON")
+	}
+}

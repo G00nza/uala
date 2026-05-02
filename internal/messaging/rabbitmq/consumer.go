@@ -20,15 +20,16 @@ const fanoutConcurrency = 100
 const defaultActivityTTL = 24 * time.Hour
 
 type Consumer struct {
-	conn           channeler
-	followRepo     domain.FollowRepository
-	fanout         domain.TimelineFanout
-	userTweetsRepo domain.UserTweetsRepository
-	backfillLimit  int
-	fanoutWorkers  int
-	retryPublisher domain.FanoutRetryPublisher
-	deadLetterPub  domain.FanoutRetryPublisher
-	activityTTL    time.Duration
+	conn             channeler
+	followRepo       domain.FollowRepository
+	fanout           domain.TimelineFanout
+	userTweetsRepo   domain.UserTweetsRepository
+	userActivityRepo domain.UserActivityRepository
+	backfillLimit    int
+	fanoutWorkers    int
+	retryPublisher   domain.FanoutRetryPublisher
+	deadLetterPub    domain.FanoutRetryPublisher
+	activityTTL      time.Duration
 }
 
 func NewConsumer(
@@ -59,6 +60,11 @@ func (c *Consumer) WithDeadLetterPublisher(p domain.FanoutRetryPublisher) *Consu
 	return c
 }
 
+func (c *Consumer) WithUserActivityRepo(r domain.UserActivityRepository) *Consumer {
+	c.userActivityRepo = r
+	return c
+}
+
 func (c *Consumer) WithActivityTTL(d time.Duration) *Consumer {
 	c.activityTTL = d
 	return c
@@ -70,6 +76,17 @@ func (c *Consumer) ConsumeTweets(ctx context.Context) {
 
 func (c *Consumer) ConsumeFollows(ctx context.Context) {
 	c.runLoop(ctx, QueueFollowCreated, c.handleFollowCreated)
+}
+
+func (c *Consumer) ConsumeUserActivity(ctx context.Context) {
+	c.runLoop(ctx, QueueUserActivity, func(ctx context.Context, d amqp.Delivery) {
+		acked, nacked := c.handleUserActivity(ctx, d)
+		if acked {
+			_ = d.Ack(false)
+		} else if nacked {
+			_ = d.Nack(false, false)
+		}
+	})
 }
 
 func (c *Consumer) ConsumeFanoutRetry(ctx context.Context) {
@@ -253,6 +270,19 @@ func (c *Consumer) handleFanoutRetry(ctx context.Context, d amqp.Delivery) (acke
 
 	if err := c.fanout.AppendTweet(ctx, evt.FollowerID, evt.Tweet, c.activityTTL); err != nil {
 		log.Printf("rabbitmq: retry AppendTweet for %s: %v", evt.FollowerID, err)
+		return false, true
+	}
+	return true, false
+}
+
+func (c *Consumer) handleUserActivity(ctx context.Context, d amqp.Delivery) (acked, nacked bool) {
+	var evt domain.UserActivityEvent
+	if err := json.Unmarshal(d.Body, &evt); err != nil {
+		log.Printf("rabbitmq: unmarshal user activity: %v", err)
+		return false, true
+	}
+	if err := c.userActivityRepo.UpdateLastActive(ctx, evt.UserID, evt.LastActive); err != nil {
+		log.Printf("rabbitmq: update last active for %s: %v", evt.UserID, err)
 		return false, true
 	}
 	return true, false
