@@ -33,7 +33,7 @@ func TestRedisTimeline_AppendAndGet(t *testing.T) {
 		Content:   "hello from redis",
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 	}
-	if err := repo.AppendTweet(context.Background(), userID, item); err != nil {
+	if err := repo.AppendTweet(context.Background(), userID, item, 0); err != nil {
 		t.Fatalf("AppendTweet: %v", err)
 	}
 
@@ -66,8 +66,8 @@ func TestRedisTimeline_MultipleItems_OrderedByScoreDesc(t *testing.T) {
 		Content: "newer tweet", CreatedAt: time.Now().UTC().Truncate(time.Second),
 	}
 
-	_ = repo.AppendTweet(context.Background(), userID, older)
-	_ = repo.AppendTweet(context.Background(), userID, newer)
+	_ = repo.AppendTweet(context.Background(), userID, older, 0)
+	_ = repo.AppendTweet(context.Background(), userID, newer, 0)
 
 	items, err := repo.GetTimeline(context.Background(), userID)
 	if err != nil {
@@ -173,8 +173,8 @@ func TestRedisTimeline_AppendTweet_DeduplicatesByTweetID(t *testing.T) {
 	redelivered := base
 	redelivered.Content = "redelivered"
 
-	_ = repo.AppendTweet(context.Background(), userID, base)
-	_ = repo.AppendTweet(context.Background(), userID, redelivered)
+	_ = repo.AppendTweet(context.Background(), userID, base, 0)
+	_ = repo.AppendTweet(context.Background(), userID, redelivered, 0)
 
 	items, err := repo.GetTimeline(context.Background(), userID)
 	if err != nil {
@@ -182,6 +182,85 @@ func TestRedisTimeline_AppendTweet_DeduplicatesByTweetID(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("want 1 item for same tweet ID, got %d", len(items))
+	}
+}
+
+func TestRedisTimeline_AppendTweet_SetsExpireNX(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
+
+	item := domain.TweetItem{
+		ID: uuid.New(), UserID: uuid.New(), Username: "alice",
+		Content: "ttl test", CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	ttl := 10 * time.Hour
+	_ = repo.AppendTweet(context.Background(), userID, item, ttl)
+
+	key := "timeline:" + userID.String()
+	remaining, err := testRDB.TTL(context.Background(), key).Result()
+	if err != nil {
+		t.Fatalf("TTL: %v", err)
+	}
+	if remaining <= 0 {
+		t.Errorf("want positive TTL after AppendTweet, got %v", remaining)
+	}
+	if remaining > ttl {
+		t.Errorf("TTL %v exceeds requested %v", remaining, ttl)
+	}
+}
+
+func TestRedisTimeline_AppendTweet_ExpireNX_DoesNotShortenExistingTTL(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500)
+
+	item1 := domain.TweetItem{
+		ID: uuid.New(), UserID: uuid.New(), Username: "alice",
+		Content: "first", CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	item2 := domain.TweetItem{
+		ID: uuid.New(), UserID: uuid.New(), Username: "alice",
+		Content: "second", CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+
+	longTTL := 20 * time.Hour
+	shortTTL := 1 * time.Hour
+
+	_ = repo.AppendTweet(context.Background(), userID, item1, longTTL)
+	_ = repo.AppendTweet(context.Background(), userID, item2, shortTTL)
+
+	key := "timeline:" + userID.String()
+	remaining, _ := testRDB.TTL(context.Background(), key).Result()
+	// ExpireNX must not overwrite an existing TTL — remaining must still be close to longTTL
+	if remaining < 19*time.Hour {
+		t.Errorf("ExpireNX should not shorten existing TTL: got %v, want > 19h", remaining)
+	}
+}
+
+func TestRedisTimeline_GetTimeline_RefreshesTTL(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, 500).
+		WithActivityTTL(24 * time.Hour)
+
+	item := domain.TweetItem{
+		ID: uuid.New(), UserID: uuid.New(), Username: "alice",
+		Content: "refresh ttl", CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	// Write with a short TTL (simulating near-expired follower)
+	_ = repo.AppendTweet(context.Background(), userID, item, 1*time.Hour)
+
+	// Reading should refresh TTL to the full activityTTL
+	_, err := repo.GetTimeline(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("GetTimeline: %v", err)
+	}
+
+	key := "timeline:" + userID.String()
+	remaining, _ := testRDB.TTL(context.Background(), key).Result()
+	if remaining < 23*time.Hour {
+		t.Errorf("GetTimeline should refresh TTL to activityTTL: got %v, want > 23h", remaining)
 	}
 }
 

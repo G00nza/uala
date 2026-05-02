@@ -13,13 +13,19 @@ import (
 )
 
 type TimelineRepository struct {
-	rdb    *redis.Client
-	pgRepo domain.TimelineRepository
-	limit  int64
+	rdb         *redis.Client
+	pgRepo      domain.TimelineRepository
+	limit       int64
+	activityTTL time.Duration
 }
 
 func NewTimelineRepository(rdb *redis.Client, pgRepo domain.TimelineRepository, limit int) *TimelineRepository {
 	return &TimelineRepository{rdb: rdb, pgRepo: pgRepo, limit: int64(limit)}
+}
+
+func (r *TimelineRepository) WithActivityTTL(ttl time.Duration) *TimelineRepository {
+	r.activityTTL = ttl
+	return r
 }
 
 func timelineKey(userID uuid.UUID) string {
@@ -71,6 +77,11 @@ func (r *TimelineRepository) readFromRedis(ctx context.Context, userID uuid.UUID
 		return nil, err
 	}
 
+	if r.activityTTL > 0 {
+		_ = r.rdb.Expire(ctx, key, r.activityTTL)
+		_ = r.rdb.Expire(ctx, dataKey, r.activityTTL)
+	}
+
 	items := make([]domain.TweetItem, 0, len(vals))
 	for _, v := range vals {
 		if v == nil {
@@ -105,7 +116,14 @@ func (r *TimelineRepository) writeToRedis(ctx context.Context, userID uuid.UUID,
 	if err := r.rdb.ZAdd(ctx, key, members...).Err(); err != nil {
 		return err
 	}
-	return r.rdb.HSet(ctx, dataKey, dataFields...).Err()
+	if err := r.rdb.HSet(ctx, dataKey, dataFields...).Err(); err != nil {
+		return err
+	}
+	if r.activityTTL > 0 {
+		_ = r.rdb.Expire(ctx, key, r.activityTTL)
+		_ = r.rdb.Expire(ctx, dataKey, r.activityTTL)
+	}
+	return nil
 }
 
 func (r *TimelineRepository) AppendTweet(ctx context.Context, userID uuid.UUID, item domain.TweetItem, ttl time.Duration) error {
@@ -124,5 +142,12 @@ func (r *TimelineRepository) AppendTweet(ctx context.Context, userID uuid.UUID, 
 	}).Err(); err != nil {
 		return err
 	}
-	return r.rdb.HSetNX(ctx, dataKey, id, string(data)).Err()
+	if err := r.rdb.HSetNX(ctx, dataKey, id, string(data)).Err(); err != nil {
+		return err
+	}
+	if ttl > 0 {
+		_ = r.rdb.ExpireNX(ctx, key, ttl)
+		_ = r.rdb.ExpireNX(ctx, dataKey, ttl)
+	}
+	return nil
 }
