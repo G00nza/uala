@@ -208,6 +208,87 @@ class Reporter:
                 print("  " + "  ".join(ep_parts), flush=True)
 
 
+OPERATIONS = ["timeline", "tweets", "follow"]
+WEIGHTS = [80, 15, 5]
+PROFILES = ["always_on", "cycler", "one_shot"]
+PROFILE_WEIGHTS = [50, 25, 25]
+
+
+def _do_one_request(
+    config: "Config",
+    state: "SeedState",
+    user_id: str,
+    profile: str,
+    collector: MetricsCollector,
+    conn_holder: List,
+) -> None:
+    op = random.choices(OPERATIONS, weights=WEIGHTS, k=1)[0]
+    conn = conn_holder[0]
+    try:
+        if op == "timeline":
+            latency_ms, status, _ = do_request(conn, "GET", "/timeline", user_id=user_id)
+        elif op == "tweets":
+            content = f"tweet {random.randint(0, 999999)}"
+            latency_ms, status, _ = do_request(conn, "POST", "/tweets", {"content": content}, user_id=user_id)
+        else:
+            target = random.choice(state.user_ids + state.celebrity_ids)
+            latency_ms, status, _ = do_request(conn, "POST", "/follow", {"followee_id": target}, user_id=user_id)
+        collector.add(RequestResult(
+            timestamp=time.time(),
+            endpoint=op,
+            latency_ms=latency_ms,
+            status_code=status,
+            vu_profile=profile,
+        ))
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn_holder[0] = _new_conn(config)
+
+
+def vu_worker(
+    config: "Config",
+    state: "SeedState",
+    profile: str,
+    stop_event: threading.Event,
+    collector: MetricsCollector,
+) -> None:
+    conn_holder = [_new_conn(config)]
+    user_id = random.choice(state.user_ids)
+
+    # Inicialización: seguir celebrities
+    for celeb_id in state.celebrity_ids:
+        try:
+            do_request(conn_holder[0], "POST", "/follow", {"followee_id": celeb_id}, user_id=user_id)
+        except Exception:
+            conn_holder[0] = _new_conn(config)
+
+    # One-shot: ventana de actividad aleatoria
+    one_shot_end = time.monotonic() + random.uniform(10, 60) if profile == "one_shot" else None
+
+    while not stop_event.is_set():
+        if profile == "one_shot":
+            if time.monotonic() >= one_shot_end:
+                break
+            _do_one_request(config, state, user_id, profile, collector, conn_holder)
+
+        elif profile == "cycler":
+            cycle_start = time.monotonic()
+            while not stop_event.is_set() and (time.monotonic() - cycle_start) < 15:
+                _do_one_request(config, state, user_id, profile, collector, conn_holder)
+            stop_event.wait(timeout=45)
+
+        else:  # always_on
+            _do_one_request(config, state, user_id, profile, collector, conn_holder)
+
+    try:
+        conn_holder[0].close()
+    except Exception:
+        pass
+
+
 def run_seed(config: "Config", state_path: str = "seed_state.json") -> "SeedState":
     state = SeedState()
 

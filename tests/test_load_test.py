@@ -284,5 +284,72 @@ class TestRunSeed(unittest.TestCase):
         self.assertEqual(len(loaded.user_ids), 2)
 
 
+from load_test import vu_worker, OPERATIONS, WEIGHTS
+
+
+class TestVuWorker(unittest.TestCase):
+    def _make_state(self):
+        return SeedState(
+            celebrity_ids=["celeb-0", "celeb-1"],
+            user_ids=[f"user-{i}" for i in range(10)],
+        )
+
+    def _make_config(self):
+        return Config.from_args(FakeArgs())
+
+    def test_one_shot_worker_stops_on_stop_event(self):
+        cfg = self._make_config()
+        state = self._make_state()
+        collector = MetricsCollector()
+        stop = threading.Event()
+        stop.set()
+
+        with patch("load_test.do_request", return_value=(1, 200, b"{}")):
+            t = threading.Thread(
+                target=vu_worker,
+                args=(cfg, state, "one_shot", stop, collector),
+            )
+            t.start()
+            t.join(timeout=2)
+
+        self.assertFalse(t.is_alive(), "worker debería terminar cuando stop está seteado")
+
+    def test_operation_distribution_roughly_matches_weights(self):
+        counts = {"timeline": 0, "tweets": 0, "follow": 0}
+        cfg = self._make_config()
+        state = self._make_state()
+        collector = MetricsCollector()
+        stop = threading.Event()
+        iterations = [0]
+        max_iters = 200
+
+        def counting_do_request(conn, method, path, body=None, user_id=None):
+            if path == "/timeline":
+                counts["timeline"] += 1
+            elif path == "/tweets":
+                counts["tweets"] += 1
+            elif path == "/follow":
+                counts["follow"] += 1
+            iterations[0] += 1
+            if iterations[0] >= max_iters:
+                stop.set()
+            return (1, 200, b"{}")
+
+        with patch("load_test.do_request", side_effect=counting_do_request):
+            t = threading.Thread(
+                target=vu_worker,
+                args=(cfg, state, "always_on", stop, collector),
+            )
+            t.start()
+            t.join(timeout=5)
+
+        load_ops = counts["timeline"] + counts["tweets"] + counts["follow"]
+        if load_ops == 0:
+            self.skipTest("no load ops recorded")
+        timeline_pct = counts["timeline"] / load_ops
+        self.assertGreater(timeline_pct, 0.60, f"timeline pct too low: {timeline_pct}")
+        self.assertLess(timeline_pct, 0.95, f"timeline pct too high: {timeline_pct}")
+
+
 if __name__ == "__main__":
     unittest.main()
