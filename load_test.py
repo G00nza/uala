@@ -157,3 +157,99 @@ class MetricsCollector:
     def all_results(self) -> List[RequestResult]:
         with self._lock:
             return list(self._results)
+
+
+class Reporter:
+    """Imprime métricas en tiempo real cada `interval` segundos."""
+
+    def __init__(self, collector: MetricsCollector, interval: int = 5) -> None:
+        self._collector = collector
+        self._interval = interval
+        self._start = time.monotonic()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=self._interval + 1)
+
+    def _run(self) -> None:
+        window_start = time.time()
+        while not self._stop.wait(self._interval):
+            self._collector.drain()
+            now_mono = time.monotonic()
+            now_wall = time.time()
+            snap = self._collector.snapshot(since=window_start)
+            window_start = now_wall
+            if not snap:
+                continue
+            elapsed = int(now_mono - self._start)
+            lats = snap["latencies"]
+            rps = len(lats) / self._interval
+            p50 = _percentile(lats, 50)
+            p95 = _percentile(lats, 95)
+            p99 = _percentile(lats, 99)
+            err_pct = snap["error_rate"] * 100
+            active = snap["active_vus"]
+            total = len(self._collector.all_results())
+            print(
+                f"\n[t={elapsed}s] VUs: {active} | RPS: {rps:.0f} | "
+                f"p50: {p50}ms | p95: {p95}ms | p99: {p99}ms | "
+                f"errors: {err_pct:.1f}% | total: {total}",
+                flush=True,
+            )
+            ep_parts = []
+            for ep, stats in snap["by_endpoint"].items():
+                ep_parts.append(f"{ep}: p95={stats['p95']}ms")
+            if ep_parts:
+                print("  " + "  ".join(ep_parts), flush=True)
+
+
+def write_results(
+    collector: MetricsCollector,
+    timestamp: str,
+    output_dir: str = ".",
+) -> None:
+    collector.drain()
+    results = collector.all_results()
+    if not results:
+        print("No results to write.")
+        return
+
+    csv_path = os.path.join(output_dir, f"results_{timestamp}.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["timestamp", "endpoint", "latency_ms", "status_code", "vu_profile"],
+        )
+        writer.writeheader()
+        for r in results:
+            writer.writerow(asdict(r))
+
+    summary_path = os.path.join(output_dir, f"summary_{timestamp}.txt")
+    total = len(results)
+    errors = sum(1 for r in results if r.status_code >= 400)
+    with open(summary_path, "w") as f:
+        f.write(f"Total requests: {total}\n")
+        f.write(f"Error rate:     {errors / total * 100:.1f}%\n\n")
+        for ep in ("timeline", "tweets", "follow"):
+            ep_results = [r for r in results if r.endpoint == ep]
+            if not ep_results:
+                continue
+            lats = [r.latency_ms for r in ep_results]
+            ep_errors = sum(1 for r in ep_results if r.status_code >= 400)
+            timestamps = [r.timestamp for r in ep_results]
+            duration_s = max(timestamps) - min(timestamps)
+            rps = len(ep_results) / duration_s if duration_s > 0 else 0
+            f.write(f"[{ep}]\n")
+            f.write(f"  requests:   {len(ep_results)}\n")
+            f.write(f"  p50:        {_percentile(lats, 50)}ms\n")
+            f.write(f"  p95:        {_percentile(lats, 95)}ms\n")
+            f.write(f"  p99:        {_percentile(lats, 99)}ms\n")
+            f.write(f"  rps:        {rps:.1f}\n")
+            f.write(f"  error_rate: {ep_errors / len(ep_results) * 100:.1f}%\n\n")
+
+    print(f"\nResultados guardados en:\n  {csv_path}\n  {summary_path}")

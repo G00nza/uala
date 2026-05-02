@@ -184,5 +184,51 @@ class TestMetricsCollector(unittest.TestCase):
         self.assertEqual(snap["latencies"], [10])
 
 
+import csv as csv_module
+from load_test import write_results
+
+
+class TestWriteResults(unittest.TestCase):
+    def _make_collector_with_results(self):
+        c = MetricsCollector()
+        t = time.time()
+        for i in range(5):
+            c.add(RequestResult(t + i, "timeline", 10 + i, 200, "always_on"))
+        for i in range(2):
+            c.add(RequestResult(t + i, "tweets", 50 + i, 201, "cycler"))
+        c.add(RequestResult(t, "follow", 30, 500, "one_shot"))
+        c.drain()
+        return c
+
+    def test_csv_has_correct_headers_and_row_count(self):
+        c = self._make_collector_with_results()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            write_results(c, "test_ts", output_dir=tmpdir)
+            csv_path = os.path.join(tmpdir, "results_test_ts.csv")
+            self.assertTrue(os.path.exists(csv_path))
+            with open(csv_path) as f:
+                reader = csv_module.DictReader(f)
+                rows = list(reader)
+            self.assertEqual(len(rows), 8)
+            self.assertIn("timestamp", rows[0])
+            self.assertIn("endpoint", rows[0])
+            self.assertIn("latency_ms", rows[0])
+            self.assertIn("status_code", rows[0])
+            self.assertIn("vu_profile", rows[0])
+
+    def test_summary_contains_endpoint_sections(self):
+        c = self._make_collector_with_results()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            write_results(c, "test_ts", output_dir=tmpdir)
+            summary_path = os.path.join(tmpdir, "summary_test_ts.txt")
+            self.assertTrue(os.path.exists(summary_path))
+            content = open(summary_path).read()
+            self.assertIn("[timeline]", content)
+            self.assertIn("[tweets]", content)
+            self.assertIn("[follow]", content)
+            self.assertIn("p95", content)
+            self.assertIn("error_rate", content)
+
+
 if __name__ == "__main__":
     unittest.main()
