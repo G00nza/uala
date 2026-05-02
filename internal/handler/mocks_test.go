@@ -50,6 +50,6 @@ type mockTimelineSvc struct {
 	err   error
 }
 
-func (m *mockTimelineSvc) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
+func (m *mockTimelineSvc) GetTimeline(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error) {
 	return m.items, m.err
 }

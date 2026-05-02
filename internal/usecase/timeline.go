@@ -24,21 +24,26 @@ func (uc *TimelineUseCase) WithUserActivityPublisher(p domain.UserActivityPublis
 	return uc
 }
 
-func (uc *TimelineUseCase) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
+func (uc *TimelineUseCase) GetTimeline(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error) {
 	if _, err := uc.userRepo.GetByID(ctx, userID); err != nil {
 		return nil, err
 	}
-	items, err := uc.timelineRepo.GetTimeline(ctx, userID)
+	items, err := uc.timelineRepo.GetTimeline(ctx, domain.TimelineQuery{
+		UserID: userID,
+		After:  after,
+		Before: before,
+		Limit:  20,
+	})
 	if err != nil {
 		return nil, err
 	}
 	if uc.activityPub != nil {
-		if pubErr := uc.activityPub.PublishUserActivity(ctx, domain.UserActivityEvent{
-			UserID:     userID,
-			LastActive: time.Now(),
-		}); pubErr != nil {
-			log.Printf("usecase: publish user activity for %s: %v", userID, pubErr)
-		}
+		evt := domain.UserActivityEvent{UserID: userID, LastActive: time.Now()}
+		go func() {
+			if pubErr := uc.activityPub.PublishUserActivity(context.Background(), evt); pubErr != nil {
+				log.Printf("usecase: publish user activity for %s: %v", userID, pubErr)
+			}
+		}()
 	}
 	return items, nil
 }

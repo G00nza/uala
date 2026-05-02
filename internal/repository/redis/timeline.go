@@ -36,33 +36,33 @@ func timelineDataKey(userID uuid.UUID) string {
 	return fmt.Sprintf("timeline:data:%s", userID)
 }
 
-func (r *TimelineRepository) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
-	key := timelineKey(userID)
+func (r *TimelineRepository) GetTimeline(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+	key := timelineKey(q.UserID)
 
 	exists, err := r.rdb.Exists(ctx, key).Result()
 	if err != nil {
-		return r.pgRepo.GetTimeline(ctx, userID)
+		return r.pgRepo.GetTimeline(ctx, q)
 	}
 
 	if exists > 0 {
 		metrics.TimelineCacheHitsTotal.Inc()
-		return r.readFromRedis(ctx, userID)
+		return r.readFromRedis(ctx, q)
 	}
 
 	metrics.TimelineCacheMissesTotal.Inc()
-	items, err := r.pgRepo.GetTimeline(ctx, userID)
+	items, err := r.pgRepo.GetTimeline(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	if len(items) > 0 {
-		_ = r.writeToRedis(ctx, userID, items)
+		_ = r.writeToRedis(ctx, q.UserID, items)
 	}
 	return items, nil
 }
 
-func (r *TimelineRepository) readFromRedis(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
-	key := timelineKey(userID)
-	dataKey := timelineDataKey(userID)
+func (r *TimelineRepository) readFromRedis(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+	key := timelineKey(q.UserID)
+	dataKey := timelineDataKey(q.UserID)
 
 	ids, err := r.rdb.ZRevRange(ctx, key, 0, r.limit-1).Result()
 	if err != nil {

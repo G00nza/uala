@@ -44,7 +44,7 @@ func (r *TimelineRepository) GetLatestByUser(ctx context.Context, userID uuid.UU
 	return items, rows.Err()
 }
 
-func (r *TimelineRepository) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
+func (r *TimelineRepository) GetTimeline(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT t.id, t.user_id, u.username, t.content, t.created_at
 		FROM follows f
@@ -52,7 +52,8 @@ func (r *TimelineRepository) GetTimeline(ctx context.Context, userID uuid.UUID) 
 		JOIN users u ON u.id = t.user_id
 		WHERE f.follower_id = $1
 		ORDER BY t.created_at DESC
-	`, userID)
+		LIMIT $2
+	`, q.UserID, q.Limit)
 	if err != nil {
 		return nil, err
 	}

@@ -18,7 +18,7 @@ func TestTimelineUseCase_GetTimeline_OK(t *testing.T) {
 	}}
 	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
 
-	items, err := uc.GetTimeline(context.Background(), userID)
+	items, err := uc.GetTimeline(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestTimelineUseCase_GetTimeline_UserNotFound(t *testing.T) {
 	userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
 	uc := usecase.NewTimelineUseCase(userRepo, &mockTimelineRepo{})
 
-	_, err := uc.GetTimeline(context.Background(), uuid.New())
+	_, err := uc.GetTimeline(context.Background(), uuid.New(), nil, nil)
 	if err != domain.ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
@@ -43,7 +43,7 @@ func TestTimelineUseCase_GetTimeline_EmptyWhenNoFollows(t *testing.T) {
 	timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}}
 	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
 
-	items, err := uc.GetTimeline(context.Background(), userID)
+	items, err := uc.GetTimeline(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,11 +60,12 @@ func TestTimelineUseCase_GetTimeline_PublishesUserActivity(t *testing.T) {
 	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo).WithUserActivityPublisher(pub)
 
 	before := time.Now()
-	_, err := uc.GetTimeline(context.Background(), userID)
-	after := time.Now()
+	_, err := uc.GetTimeline(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	time.Sleep(20 * time.Millisecond) // publish runs in a goroutine
+	after := time.Now()
 
 	if len(pub.calls) != 1 {
 		t.Fatalf("want 1 UserActivity event, got %d", len(pub.calls))
@@ -84,7 +85,7 @@ func TestTimelineUseCase_GetTimeline_NoPublisher_OK(t *testing.T) {
 	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
 
 	// No publisher wired — should not panic
-	_, err := uc.GetTimeline(context.Background(), userID)
+	_, err := uc.GetTimeline(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -59,7 +59,7 @@ type mockTimelineRepo struct {
 	err   error
 }
 
-func (m *mockTimelineRepo) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
+func (m *mockTimelineRepo) GetTimeline(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
 	return m.items, m.err
 }
 

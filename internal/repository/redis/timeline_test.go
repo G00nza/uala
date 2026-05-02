@@ -15,7 +15,7 @@ type mockPgTimeline struct {
 	err   error
 }
 
-func (m *mockPgTimeline) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
+func (m *mockPgTimeline) GetTimeline(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
 	return m.items, m.err
 }
 
@@ -37,7 +37,7 @@ func TestRedisTimeline_AppendAndGet(t *testing.T) {
 		t.Fatalf("AppendTweet: %v", err)
 	}
 
-	items, err := repo.GetTimeline(context.Background(), userID)
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestRedisTimeline_MultipleItems_OrderedByScoreDesc(t *testing.T) {
 	_ = repo.AppendTweet(context.Background(), userID, older, 0)
 	_ = repo.AppendTweet(context.Background(), userID, newer, 0)
 
-	items, err := repo.GetTimeline(context.Background(), userID)
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestRedisTimeline_FallbackToPostgresOnMiss(t *testing.T) {
 	}
 	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: pgItems}, 500)
 
-	items, err := repo.GetTimeline(context.Background(), userID)
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -119,11 +119,11 @@ func TestRedisTimeline_FallbackPopulatesRedis(t *testing.T) {
 	}
 	// First call with Postgres data
 	repo1 := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: pgItems}, 500)
-	_, _ = repo1.GetTimeline(context.Background(), userID)
+	_, _ = repo1.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 
 	// Second call with empty Postgres — should read from Redis cache
 	repo2 := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{items: []domain.TweetItem{}}, 500)
-	items, err := repo2.GetTimeline(context.Background(), userID)
+	items, err := repo2.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline second call: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRedisTimeline_EmptyTimeline_NoFallbackLoop(t *testing.T) {
 	repo := redisrepo.NewTimelineRepository(testRDB, pg, 500)
 
 	// User with no followed tweets: Redis miss → Postgres → empty → no Redis write
-	items, err := repo.GetTimeline(context.Background(), userID)
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestRedisTimeline_AppendTweet_DeduplicatesByTweetID(t *testing.T) {
 	_ = repo.AppendTweet(context.Background(), userID, base, 0)
 	_ = repo.AppendTweet(context.Background(), userID, redelivered, 0)
 
-	items, err := repo.GetTimeline(context.Background(), userID)
+	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestRedisTimeline_GetTimeline_RefreshesTTL(t *testing.T) {
 	_ = repo.AppendTweet(context.Background(), userID, item, 1*time.Hour)
 
 	// Reading should refresh TTL to the full activityTTL
-	_, err := repo.GetTimeline(context.Background(), userID)
+	_, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -269,7 +269,7 @@ type countingPgTimeline struct {
 	countPtr *int
 }
 
-func (m *countingPgTimeline) GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error) {
+func (m *countingPgTimeline) GetTimeline(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
 	*m.countPtr++
 	return m.items, nil
 }

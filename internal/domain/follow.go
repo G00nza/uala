@@ -33,8 +33,15 @@ type FollowRepository interface {
 	GetActiveFollowers(ctx context.Context, followeeID uuid.UUID, activeSince time.Time) ([]FollowerActivity, error)
 }
 
+type TimelineQuery struct {
+	UserID uuid.UUID
+	After  *uuid.UUID
+	Before *uuid.UUID
+	Limit  int
+}
+
 type TimelineRepository interface {
-	GetTimeline(ctx context.Context, userID uuid.UUID) ([]TweetItem, error)
+	GetTimeline(ctx context.Context, q TimelineQuery) ([]TweetItem, error)
 }
 
 type TimelineFanout interface {

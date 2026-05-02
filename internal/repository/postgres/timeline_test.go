@@ -15,7 +15,7 @@ func TestTimelineRepository_GetTimeline_Empty(t *testing.T) {
 	alice := &domain.User{ID: uuid.New(), Username: "alice_tl", CreatedAt: time.Now().UTC()}
 	_ = r.user.Create(context.Background(), alice)
 
-	items, err := r.timeline.GetTimeline(context.Background(), alice.ID)
+	items, err := r.timeline.GetTimeline(context.Background(), domain.TimelineQuery{UserID: alice.ID, Limit: 20})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestTimelineRepository_GetTimeline_WithTweets(t *testing.T) {
 		ID: uuid.New(), UserID: bob.ID, Content: "hello from bob", CreatedAt: time.Now().UTC(),
 	})
 
-	items, err := r.timeline.GetTimeline(context.Background(), alice.ID)
+	items, err := r.timeline.GetTimeline(context.Background(), domain.TimelineQuery{UserID: alice.ID, Limit: 20})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
 	}

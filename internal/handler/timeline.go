@@ -10,7 +10,7 @@ import (
 )
 
 type timelineGetter interface {
-	GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.TweetItem, error)
+	GetTimeline(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error)
 }
 
 type TimelineHandler struct {
@@ -35,7 +35,7 @@ func (h *TimelineHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	items, err := h.svc.GetTimeline(r.Context(), userID)
+	items, err := h.svc.GetTimeline(r.Context(), userID, nil, nil)
 	if err != nil {
 		writeJSON(w, domainErrToStatus(err), map[string]string{"error": err.Error()})
 		return
