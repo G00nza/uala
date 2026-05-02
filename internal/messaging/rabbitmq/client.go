@@ -17,6 +17,8 @@ const (
 	QueueFanoutWait    = "fanout.wait"
 
 	QueueFanoutDead = "fanout.dead"
+
+	QueueUserActivity = "user.activity"
 )
 
 // Connect dials RabbitMQ, declares the topology, and starts a background
@@ -52,7 +54,7 @@ func declareTopology(conn *amqp.Connection) error {
 	}
 	defer ch.Close()
 
-	for _, q := range []string{QueueTweetCreated, QueueFollowCreated} {
+	for _, q := range []string{QueueTweetCreated, QueueFollowCreated, QueueUserActivity} {
 		if _, err := ch.QueueDeclare(q, true, false, false, false, nil); err != nil {
 			return err
 		}

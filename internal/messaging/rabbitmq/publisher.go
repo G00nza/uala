@@ -35,6 +35,10 @@ func (p *Publisher) PublishFollowCreated(ctx context.Context, evt domain.FollowC
 	return p.publishToExchange("", QueueFollowCreated, evt)
 }
 
+func (p *Publisher) PublishUserActivity(ctx context.Context, evt domain.UserActivityEvent) error {
+	return p.publishToExchange("", QueueUserActivity, evt)
+}
+
 func (p *Publisher) PublishFanoutRetry(ctx context.Context, evt domain.FanoutRetryEvent) error {
 	return p.publishToExchange(ExchangeFanoutRetry, QueueFanoutRetry, evt)
 }
