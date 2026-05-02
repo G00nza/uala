@@ -3,3 +3,8 @@
 /api
 /docs/superpowers
 .idea
+__pycache__/
+*.pyc
+seed_state.json
+results_*.csv
+summary_*.txt
