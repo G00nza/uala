@@ -76,22 +76,27 @@ func main() {
 	followRepo := postgres.NewFollowRepository(db)
 	pgTimelineRepo := postgres.NewTimelineRepository(db)
 
-	redisTimeline := redisrepo.NewTimelineRepository(rdb, pgTimelineRepo, cfg.TimelineLimit)
+	redisTimeline := redisrepo.NewTimelineRepository(rdb, pgTimelineRepo, cfg.TimelineLimit).
+		WithActivityTTL(cfg.ActivityTTL)
 
 	publisher := rabbitmq.NewPublisher(amqpConn)
 
 	consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisTimeline, pgTimelineRepo, cfg.FollowBackfillLimit).
 		WithRetryPublisher(publisher).
-		WithDeadLetterPublisher(rabbitmq.NewDeadLetterPublisher(publisher))
+		WithDeadLetterPublisher(rabbitmq.NewDeadLetterPublisher(publisher)).
+		WithUserActivityRepo(userRepo).
+		WithActivityTTL(cfg.ActivityTTL)
 
 	go consumer.ConsumeTweets(ctx)
 	go consumer.ConsumeFollows(ctx)
 	go consumer.ConsumeFanoutRetry(ctx)
+	go consumer.ConsumeUserActivity(ctx)
 
 	userUC := usecase.NewUserUseCase(userRepo)
 	tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, publisher)
 	followUC := usecase.NewFollowUseCase(userRepo, followRepo, publisher)
-	timelineUC := usecase.NewTimelineUseCase(userRepo, redisTimeline)
+	timelineUC := usecase.NewTimelineUseCase(userRepo, redisTimeline).
+		WithUserActivityPublisher(publisher)
 
 	router := handler.NewRouter(
 		handler.NewUserHandler(userUC),
