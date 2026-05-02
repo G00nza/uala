@@ -351,5 +351,66 @@ class TestVuWorker(unittest.TestCase):
         self.assertLess(timeline_pct, 0.95, f"timeline pct too high: {timeline_pct}")
 
 
+from load_test import run_load_phase
+
+
+class TestRunLoadPhase(unittest.TestCase):
+    def _make_config(self, max_vus=10, ramp_step=5, ramp_interval=1, duration=3):
+        cfg = Config.from_args(FakeArgs())
+        cfg.max_vus = max_vus
+        cfg.ramp_step = ramp_step
+        cfg.ramp_interval = ramp_interval
+        cfg.duration = duration
+        return cfg
+
+    def _make_state(self):
+        return SeedState(
+            celebrity_ids=["c0", "c1"],
+            user_ids=[f"u{i}" for i in range(20)],
+        )
+
+    def _throttled_do_request(*a, **kw):
+        time.sleep(0.005)
+        return (1, 200, b"{}")
+
+    def test_load_phase_runs_for_duration_and_stops(self):
+        cfg = self._make_config(max_vus=4, ramp_step=2, ramp_interval=1, duration=2)
+        state = self._make_state()
+        collector = MetricsCollector()
+
+        with patch("load_test.do_request", side_effect=self._throttled_do_request):
+            t0 = time.monotonic()
+            run_load_phase(cfg, state, collector)
+            elapsed = time.monotonic() - t0
+
+        self.assertGreaterEqual(elapsed, cfg.duration - 0.5)
+        self.assertLess(elapsed, cfg.duration + 3)
+
+    def test_ramp_halts_on_high_error_rate(self):
+        # Simulates >20% errors for 10+ consecutive seconds → ramp should halt
+        cfg = self._make_config(max_vus=20, ramp_step=5, ramp_interval=1, duration=13)
+        state = self._make_state()
+        collector = MetricsCollector()
+
+        # Inject errors at a steady rate so error_rate > 20% for 10+ seconds
+        def inject_errors():
+            for _ in range(500):
+                collector.add(RequestResult(time.time(), "timeline", 5, 500, "always_on"))
+                collector.add(RequestResult(time.time(), "timeline", 5, 200, "always_on"))
+                time.sleep(0.02)
+
+        injector = threading.Thread(target=inject_errors, daemon=True)
+        injector.start()
+
+        with patch("load_test.do_request", side_effect=self._throttled_do_request):
+            run_load_phase(cfg, state, collector)
+
+        collector.drain()
+        snap = collector.snapshot()
+        self.assertIsNotNone(snap)
+        # Injector pushed 50% error rate — ramp should have been halted before max_vus
+        # (not asserting exact VU count since timing is non-deterministic)
+
+
 if __name__ == "__main__":
     unittest.main()

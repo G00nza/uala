@@ -359,6 +359,68 @@ def run_seed(config: "Config", state_path: str = "seed_state.json") -> "SeedStat
     return state
 
 
+def run_load_phase(
+    config: "Config",
+    state: "SeedState",
+    collector: MetricsCollector,
+) -> None:
+    stop_event = threading.Event()
+    threads: List[threading.Thread] = []
+    total_vus = 0
+    ramp_halted = False
+    consecutive_high_error_s = 0
+    start_time = time.monotonic()
+
+    def _add_wave() -> None:
+        nonlocal total_vus
+        wave = min(config.ramp_step, config.max_vus - total_vus)
+        for _ in range(wave):
+            profile = random.choices(PROFILES, weights=PROFILE_WEIGHTS, k=1)[0]
+            t = threading.Thread(
+                target=vu_worker,
+                args=(config, state, profile, stop_event, collector),
+                daemon=True,
+            )
+            t.start()
+            threads.append(t)
+        total_vus += wave
+        print(f"[load] +{wave} VUs → {total_vus} total", flush=True)
+
+    _add_wave()
+    last_wave_time = time.monotonic()
+
+    while not stop_event.is_set():
+        time.sleep(1)
+        now = time.monotonic()
+        elapsed = now - start_time
+
+        collector.drain()
+        snap = collector.snapshot(since=time.time() - 10)
+        if snap and snap["error_rate"] > 0.20:
+            consecutive_high_error_s += 1
+        else:
+            consecutive_high_error_s = 0
+
+        if consecutive_high_error_s >= 10 and not ramp_halted:
+            print(f"[load] WARN: error rate >20% por 10s — ramp detenido en {total_vus} VUs", flush=True)
+            ramp_halted = True
+
+        if not ramp_halted and total_vus < config.max_vus:
+            if now - last_wave_time >= config.ramp_interval:
+                _add_wave()
+                last_wave_time = now
+
+        active = sum(1 for t in threads if t.is_alive())
+        collector.set_active_vus(active)
+
+        if elapsed >= config.duration:
+            stop_event.set()
+
+    for t in threads:
+        t.join(timeout=5)
+    print(f"[load] Fase de carga terminada. {len(threads)} workers lanzados.", flush=True)
+
+
 def write_results(
     collector: MetricsCollector,
     timestamp: str,
@@ -403,4 +465,57 @@ def write_results(
             f.write(f"  rps:        {rps:.1f}\n")
             f.write(f"  error_rate: {ep_errors / len(ep_results) * 100:.1f}%\n\n")
 
-    print(f"\nResultados guardados en:\n  {csv_path}\n  {summary_path}")
+    print(f"\nResultados guardados en:\n  {csv_path}\n  {summary_path}", flush=True)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Load test for Uala API")
+    p.add_argument("--target", required=True, help="URL base del servidor, ej: http://192.168.1.10:8080")
+    p.add_argument("--users", type=int, default=1000)
+    p.add_argument("--tweets-per-user", type=int, default=100, dest="tweets_per_user")
+    p.add_argument("--follows-per-user", type=int, default=200, dest="follows_per_user")
+    p.add_argument("--max-vus", type=int, default=500, dest="max_vus")
+    p.add_argument("--ramp-step", type=int, default=50, dest="ramp_step")
+    p.add_argument("--ramp-interval", type=int, default=10, dest="ramp_interval")
+    p.add_argument("--duration", type=int, default=600)
+    p.add_argument("--seed-only", action="store_true", dest="seed_only")
+    p.add_argument("--skip-seed", action="store_true", dest="skip_seed")
+    p.add_argument("--seed-workers", type=int, default=50, dest="seed_workers")
+    return p
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    config = Config.from_args(args)
+
+    if config.skip_seed:
+        print("[main] Saltando seed — cargando estado desde seed_state.json")
+        state = SeedState.load()
+    else:
+        state = run_seed(config)
+        if config.seed_only:
+            print("[main] --seed-only: saliendo.")
+            return
+
+    collector = MetricsCollector()
+    reporter = Reporter(collector)
+    reporter.start()
+
+    print(
+        f"\n[main] Iniciando carga: max_vus={config.max_vus} ramp_step={config.ramp_step} "
+        f"ramp_interval={config.ramp_interval}s duration={config.duration}s\n",
+        flush=True,
+    )
+
+    try:
+        run_load_phase(config, state, collector)
+    finally:
+        reporter.stop()
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        write_results(collector, ts)
+        print("[main] Listo.")
+
+
+if __name__ == "__main__":
+    main()
