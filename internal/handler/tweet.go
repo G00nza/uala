@@ -9,7 +9,7 @@ import (
 )
 
 type tweetCreator interface {
-	CreateTweet(ctx context.Context, userID uuid.UUID, content string) (*domain.Tweet, error)
+	Execute(ctx context.Context, userID uuid.UUID, content string) (*domain.Tweet, error)
 }
 
 type TweetHandler struct {
@@ -33,7 +33,7 @@ func (h *TweetHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	tweet, err := h.svc.CreateTweet(r.Context(), userID, req.Content)
+	tweet, err := h.svc.Execute(r.Context(), userID, req.Content)
 	if err != nil {
 		writeJSON(w, domainErrToStatus(err), map[string]string{"error": err.Error()})
 		return

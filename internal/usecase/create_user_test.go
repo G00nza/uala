@@ -10,8 +10,8 @@ import (
 )
 
 func TestUserUseCase_CreateUser_OK(t *testing.T) {
-	uc := usecase.NewUserUseCase(&mockUserRepo{})
-	user, err := uc.CreateUser(context.Background(), "alice")
+	uc := usecase.NewCreateUserUseCase(&mockUserRepo{})
+	user, err := uc.Execute(context.Background(), "alice")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -24,8 +24,8 @@ func TestUserUseCase_CreateUser_OK(t *testing.T) {
 }
 
 func TestUserUseCase_CreateUser_EmptyUsername(t *testing.T) {
-	uc := usecase.NewUserUseCase(&mockUserRepo{})
-	_, err := uc.CreateUser(context.Background(), "")
+	uc := usecase.NewCreateUserUseCase(&mockUserRepo{})
+	_, err := uc.Execute(context.Background(), "")
 	if err != domain.ErrEmptyUsername {
 		t.Fatalf("want ErrEmptyUsername, got %v", err)
 	}
@@ -33,8 +33,8 @@ func TestUserUseCase_CreateUser_EmptyUsername(t *testing.T) {
 
 func TestUserUseCase_CreateUser_PropagatesRepoError(t *testing.T) {
 	repo := &mockUserRepo{createErr: domain.ErrUsernameConflict}
-	uc := usecase.NewUserUseCase(repo)
-	_, err := uc.CreateUser(context.Background(), "alice")
+	uc := usecase.NewCreateUserUseCase(repo)
+	_, err := uc.Execute(context.Background(), "alice")
 	if err != domain.ErrUsernameConflict {
 		t.Fatalf("want ErrUsernameConflict, got %v", err)
 	}

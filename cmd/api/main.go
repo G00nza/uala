@@ -92,10 +92,10 @@ func main() {
 	go consumer.ConsumeFanoutRetry(ctx)
 	go consumer.ConsumeUserActivity(ctx)
 
-	userUC := usecase.NewUserUseCase(userRepo)
-	tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, publisher)
-	followUC := usecase.NewFollowUseCase(userRepo, followRepo, publisher)
-	timelineUC := usecase.NewTimelineUseCase(userRepo, redisTimeline).
+	userUC := usecase.NewCreateUserUseCase(userRepo)
+	tweetUC := usecase.NewCreateTweetUseCase(userRepo, tweetRepo, publisher)
+	followUC := usecase.NewFollowUserUseCase(userRepo, followRepo, publisher)
+	timelineUC := usecase.NewGetTimelineUseCase(userRepo, redisTimeline).
 		WithUserActivityPublisher(publisher)
 
 	router := handler.NewRouter(

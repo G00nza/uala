@@ -17,9 +17,9 @@ func TestTweetUseCase_CreateTweet_OK(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "alice"}}
 	publisher := &mockTweetPublisher{}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
+	uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
 
-	tweet, err := uc.CreateTweet(context.Background(), userID, "hello world")
+	tweet, err := uc.Execute(context.Background(), userID, "hello world")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,17 +32,17 @@ func TestTweetUseCase_CreateTweet_OK(t *testing.T) {
 }
 
 func TestTweetUseCase_CreateTweet_EmptyContent(t *testing.T) {
-	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockTweetPublisher{})
-	_, err := uc.CreateTweet(context.Background(), uuid.New(), "")
+	uc := usecase.NewCreateTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockTweetPublisher{})
+	_, err := uc.Execute(context.Background(), uuid.New(), "")
 	if err != domain.ErrEmptyContent {
 		t.Fatalf("want ErrEmptyContent, got %v", err)
 	}
 }
 
 func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) {
-	uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockTweetPublisher{})
+	uc := usecase.NewCreateTweetUseCase(&mockUserRepo{}, &mockTweetRepo{}, &mockTweetPublisher{})
 	content := string(make([]rune, 281))
-	_, err := uc.CreateTweet(context.Background(), uuid.New(), content)
+	_, err := uc.Execute(context.Background(), uuid.New(), content)
 	if err != domain.ErrContentTooLong {
 		t.Fatalf("want ErrContentTooLong, got %v", err)
 	}
@@ -50,9 +50,9 @@ func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) {
 
 func TestTweetUseCase_CreateTweet_UserNotFound(t *testing.T) {
 	userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, &mockTweetPublisher{})
+	uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{}, &mockTweetPublisher{})
 
-	_, err := uc.CreateTweet(context.Background(), uuid.New(), "hello")
+	_, err := uc.Execute(context.Background(), uuid.New(), "hello")
 	if err != domain.ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
@@ -62,9 +62,9 @@ func TestTweetUseCase_CreateTweet_PublishesEvent(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "bob"}}
 	publisher := &mockTweetPublisher{}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
+	uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
 
-	_, err := uc.CreateTweet(context.Background(), userID, "async fanout")
+	_, err := uc.Execute(context.Background(), userID, "async fanout")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,9 +87,9 @@ func TestTweetUseCase_CreateTweet_PublishErrorIsIgnored(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, Username: "alice"}}
 	publisher := &mockTweetPublisher{publishErr: domain.ErrNotFound}
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
+	uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{}, publisher)
 
-	_, err := uc.CreateTweet(context.Background(), userID, "ignore publish error")
+	_, err := uc.Execute(context.Background(), userID, "ignore publish error")
 	if err != nil {
 		t.Fatalf("publish error must not propagate, got: %v", err)
 	}
@@ -102,9 +102,9 @@ func TestTweetUseCase_CreateTweet_PublishErrorIsLogged(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, publisher).WithLogger(logger)
+	uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{}, publisher).WithLogger(logger)
 
-	_, err := uc.CreateTweet(context.Background(), userID, "test publish logging")
+	_, err := uc.Execute(context.Background(), userID, "test publish logging")
 	if err != nil {
 		t.Fatalf("publish error must not propagate, got: %v", err)
 	}

@@ -27,7 +27,7 @@ INTEGRATION=1 go test ./...
 go test ./internal/usecase/...
 
 # Single test by name
-go test ./internal/usecase/... -run TestTweetUseCase_CreateTweet -v
+go test ./internal/usecase/... -run TestTweetUseCase_CreateTweet_OK -v
 
 # Single integration test
 INTEGRATION=1 go test ./internal/repository/postgres/... -run TestFollowRepository_GetActiveFollowers -v
@@ -47,7 +47,7 @@ repository    messaging
 
 **`internal/domain/`** — Pure Go structs and interfaces. All repository and publisher contracts live here. No framework dependencies. `errors.go` defines the sentinel errors that handlers map to HTTP status codes.
 
-**`internal/usecase/`** — Concrete structs (no interfaces, per ADR-001). Each use case owns one operation: `UserUseCase.Create`, `TweetUseCase.CreateTweet`, `FollowUseCase.Follow`, `TimelineUseCase.GetTimeline`. Use cases validate business rules and orchestrate repositories + publishers.
+**`internal/usecase/`** — Concrete structs (no interfaces, per ADR-001). Each use case owns one operation exposed as `Execute`: `CreateUserUseCase`, `CreateTweetUseCase`, `FollowUserUseCase`, `GetTimelineUseCase`. Use cases validate business rules and orchestrate repositories + publishers.
 
 **`internal/handler/`** — HTTP layer using stdlib `net/http`. Handlers depend directly on concrete use cases. For unit testing, each handler defines a private minimal interface used only in `*_test.go` files. Integration tests (`INTEGRATION=1`) spin up a real `httptest.Server` with Postgres + Redis.
 

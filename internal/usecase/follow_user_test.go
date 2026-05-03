@@ -19,18 +19,18 @@ func TestFollowUseCase_Follow_OK(t *testing.T) {
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: followee}}
 	followRepo := &mockFollowRepo{}
 	publisher := &mockFollowPublisher{}
-	uc := usecase.NewFollowUseCase(userRepo, followRepo, publisher)
+	uc := usecase.NewFollowUserUseCase(userRepo, followRepo, publisher)
 
-	if err := uc.Follow(context.Background(), follower, followee); err != nil {
+	if err := uc.Execute(context.Background(), follower, followee); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestFollowUseCase_Follow_SelfFollow(t *testing.T) {
 	id := uuid.New()
-	uc := usecase.NewFollowUseCase(&mockUserRepo{}, &mockFollowRepo{}, &mockFollowPublisher{})
+	uc := usecase.NewFollowUserUseCase(&mockUserRepo{}, &mockFollowRepo{}, &mockFollowPublisher{})
 
-	err := uc.Follow(context.Background(), id, id)
+	err := uc.Execute(context.Background(), id, id)
 	if err != domain.ErrSelfFollow {
 		t.Fatalf("want ErrSelfFollow, got %v", err)
 	}
@@ -40,9 +40,9 @@ func TestFollowUseCase_Follow_AlreadyFollowing(t *testing.T) {
 	follower := uuid.New()
 	followee := uuid.New()
 	followRepo := &mockFollowRepo{existsResult: true}
-	uc := usecase.NewFollowUseCase(&mockUserRepo{}, followRepo, &mockFollowPublisher{})
+	uc := usecase.NewFollowUserUseCase(&mockUserRepo{}, followRepo, &mockFollowPublisher{})
 
-	err := uc.Follow(context.Background(), follower, followee)
+	err := uc.Execute(context.Background(), follower, followee)
 	if err != domain.ErrAlreadyFollowing {
 		t.Fatalf("want ErrAlreadyFollowing, got %v", err)
 	}
@@ -52,9 +52,9 @@ func TestFollowUseCase_Follow_FolloweeNotFound(t *testing.T) {
 	follower := uuid.New()
 	followee := uuid.New()
 	userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
-	uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, &mockFollowPublisher{})
+	uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{}, &mockFollowPublisher{})
 
-	err := uc.Follow(context.Background(), follower, followee)
+	err := uc.Execute(context.Background(), follower, followee)
 	if err != domain.ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
@@ -65,9 +65,9 @@ func TestFollowUseCase_Follow_PublishesEvent(t *testing.T) {
 	followee := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: followee}}
 	publisher := &mockFollowPublisher{}
-	uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, publisher)
+	uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{}, publisher)
 
-	if err := uc.Follow(context.Background(), follower, followee); err != nil {
+	if err := uc.Execute(context.Background(), follower, followee); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(publisher.calls) != 1 {
@@ -90,9 +90,9 @@ func TestFollowUseCase_Follow_PublishErrorIsLogged(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, publisher).WithLogger(logger)
+	uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{}, publisher).WithLogger(logger)
 
-	if err := uc.Follow(context.Background(), follower, followee); err != nil {
+	if err := uc.Execute(context.Background(), follower, followee); err != nil {
 		t.Fatalf("publish error must not propagate, got: %v", err)
 	}
 	if !strings.Contains(buf.String(), "rabbitmq connection refused") {

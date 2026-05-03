@@ -5,27 +5,28 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
-type FollowUseCase struct {
+type FollowUserUseCase struct {
 	userRepo   domain.UserRepository
 	followRepo domain.FollowRepository
 	publisher  domain.FollowEventPublisher
 	logger     *slog.Logger
 }
 
-func NewFollowUseCase(userRepo domain.UserRepository, followRepo domain.FollowRepository, publisher domain.FollowEventPublisher) *FollowUseCase {
-	return &FollowUseCase{userRepo: userRepo, followRepo: followRepo, publisher: publisher, logger: slog.Default()}
+func NewFollowUserUseCase(userRepo domain.UserRepository, followRepo domain.FollowRepository, publisher domain.FollowEventPublisher) *FollowUserUseCase {
+	return &FollowUserUseCase{userRepo: userRepo, followRepo: followRepo, publisher: publisher, logger: slog.Default()}
 }
 
-func (uc *FollowUseCase) WithLogger(l *slog.Logger) *FollowUseCase {
+func (uc *FollowUserUseCase) WithLogger(l *slog.Logger) *FollowUserUseCase {
 	uc.logger = l
 	return uc
 }
 
-func (uc *FollowUseCase) Follow(ctx context.Context, followerID, followeeID uuid.UUID) error {
+func (uc *FollowUserUseCase) Execute(ctx context.Context, followerID, followeeID uuid.UUID) error {
 	if followerID == followeeID {
 		return domain.ErrSelfFollow
 	}

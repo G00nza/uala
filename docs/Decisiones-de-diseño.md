@@ -13,7 +13,7 @@ Los use cases representan lógica de negocio que no tiene alternativa: no hay do
 Los use cases son structs concretos. Ningún package define una interfaz que los represente en código de producción. Los handlers dependen directamente de ellos:
 
 ```go
-handler.NewUserHandler(usecase.NewUserUseCase(userRepo))
+handler.NewUserHandler(usecase.NewCreateUserUseCase(userRepo))
 ```
 
 Para testear handlers en aislamiento, cada handler define una **interfaz privada mínima** que vive únicamente en ese package y no es visible desde afuera:

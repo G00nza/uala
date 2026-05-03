@@ -89,10 +89,10 @@ func testServer(t *testing.T) *httptest.Server {
 	redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgTimeline, 500)
 
 	router := handler.NewRouter(
-		handler.NewUserHandler(usecase.NewUserUseCase(userRepo)),
-		handler.NewTweetHandler(usecase.NewTweetUseCase(userRepo, tweetRepo, &noopTweetPublisher{})),
-		handler.NewFollowHandler(usecase.NewFollowUseCase(userRepo, followRepo, &noopFollowPublisher{})),
-		handler.NewTimelineHandler(usecase.NewTimelineUseCase(userRepo, redisTimeline)),
+		handler.NewUserHandler(usecase.NewCreateUserUseCase(userRepo)),
+		handler.NewTweetHandler(usecase.NewCreateTweetUseCase(userRepo, tweetRepo, &noopTweetPublisher{})),
+		handler.NewFollowHandler(usecase.NewFollowUserUseCase(userRepo, followRepo, &noopFollowPublisher{})),
+		handler.NewTimelineHandler(usecase.NewGetTimelineUseCase(userRepo, redisTimeline)),
 	)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)

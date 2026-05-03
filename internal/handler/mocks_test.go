@@ -24,7 +24,7 @@ type mockUserSvc struct {
 	err  error
 }
 
-func (m *mockUserSvc) CreateUser(ctx context.Context, username string) (*domain.User, error) {
+func (m *mockUserSvc) Execute(ctx context.Context, username string) (*domain.User, error) {
 	return m.user, m.err
 }
 
@@ -33,7 +33,7 @@ type mockTweetSvc struct {
 	err   error
 }
 
-func (m *mockTweetSvc) CreateTweet(ctx context.Context, userID uuid.UUID, content string) (*domain.Tweet, error) {
+func (m *mockTweetSvc) Execute(ctx context.Context, userID uuid.UUID, content string) (*domain.Tweet, error) {
 	return m.tweet, m.err
 }
 
@@ -41,7 +41,7 @@ type mockFollowSvc struct {
 	err error
 }
 
-func (m *mockFollowSvc) Follow(ctx context.Context, followerID, followeeID uuid.UUID) error {
+func (m *mockFollowSvc) Execute(ctx context.Context, followerID, followeeID uuid.UUID) error {
 	return m.err
 }
 
@@ -52,7 +52,7 @@ type mockTimelineSvc struct {
 	capturedBefore *uuid.UUID
 }
 
-func (m *mockTimelineSvc) GetTimeline(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error) {
+func (m *mockTimelineSvc) Execute(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error) {
 	m.capturedAfter = after
 	m.capturedBefore = before
 	return m.items, m.err

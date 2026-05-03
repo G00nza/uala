@@ -16,9 +16,9 @@ func TestTimelineUseCase_GetTimeline_OK(t *testing.T) {
 	timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{
 		{ID: uuid.New(), UserID: uuid.New(), Username: "bob", Content: "hello", CreatedAt: time.Now()},
 	}}
-	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
+	uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)
 
-	items, err := uc.GetTimeline(context.Background(), userID, nil, nil)
+	items, err := uc.Execute(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -29,9 +29,9 @@ func TestTimelineUseCase_GetTimeline_OK(t *testing.T) {
 
 func TestTimelineUseCase_GetTimeline_UserNotFound(t *testing.T) {
 	userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
-	uc := usecase.NewTimelineUseCase(userRepo, &mockTimelineRepo{})
+	uc := usecase.NewGetTimelineUseCase(userRepo, &mockTimelineRepo{})
 
-	_, err := uc.GetTimeline(context.Background(), uuid.New(), nil, nil)
+	_, err := uc.Execute(context.Background(), uuid.New(), nil, nil)
 	if err != domain.ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
@@ -41,9 +41,9 @@ func TestTimelineUseCase_GetTimeline_EmptyWhenNoFollows(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID}}
 	timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}}
-	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
+	uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)
 
-	items, err := uc.GetTimeline(context.Background(), userID, nil, nil)
+	items, err := uc.Execute(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,10 +57,10 @@ func TestTimelineUseCase_GetTimeline_PublishesUserActivity(t *testing.T) {
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID}}
 	timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}}
 	pub := &mockUserActivityPublisher{}
-	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo).WithUserActivityPublisher(pub)
+	uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo).WithUserActivityPublisher(pub)
 
 	before := time.Now()
-	_, err := uc.GetTimeline(context.Background(), userID, nil, nil)
+	_, err := uc.Execute(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,10 +82,10 @@ func TestTimelineUseCase_GetTimeline_NoPublisher_OK(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &mockUserRepo{getUser: &domain.User{ID: userID}}
 	timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}}
-	uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
+	uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)
 
 	// No publisher wired — should not panic
-	_, err := uc.GetTimeline(context.Background(), userID, nil, nil)
+	_, err := uc.Execute(context.Background(), userID, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

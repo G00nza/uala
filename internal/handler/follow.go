@@ -8,7 +8,7 @@ import (
 )
 
 type userFollower interface {
-	Follow(ctx context.Context, followerID, followeeID uuid.UUID) error
+	Execute(ctx context.Context, followerID, followeeID uuid.UUID) error
 }
 
 type FollowHandler struct {
@@ -37,7 +37,7 @@ func (h *FollowHandler) Follow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "followee_id must be a valid UUID"})
 		return
 	}
-	if err := h.svc.Follow(r.Context(), followerID, followeeID); err != nil {
+	if err := h.svc.Execute(r.Context(), followerID, followeeID); err != nil {
 		writeJSON(w, domainErrToStatus(err), map[string]string{"error": err.Error()})
 		return
 	}

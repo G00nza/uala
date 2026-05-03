@@ -10,19 +10,19 @@ import (
 	"uala/internal/domain"
 )
 
-type TweetUseCase struct {
+type CreateTweetUseCase struct {
 	userRepo  domain.UserRepository
 	tweetRepo domain.TweetRepository
 	publisher domain.TweetEventPublisher
 	logger    *slog.Logger
 }
 
-func NewTweetUseCase(
+func NewCreateTweetUseCase(
 	userRepo domain.UserRepository,
 	tweetRepo domain.TweetRepository,
 	publisher domain.TweetEventPublisher,
-) *TweetUseCase {
-	return &TweetUseCase{
+) *CreateTweetUseCase {
+	return &CreateTweetUseCase{
 		userRepo:  userRepo,
 		tweetRepo: tweetRepo,
 		publisher: publisher,
@@ -30,12 +30,12 @@ func NewTweetUseCase(
 	}
 }
 
-func (uc *TweetUseCase) WithLogger(l *slog.Logger) *TweetUseCase {
+func (uc *CreateTweetUseCase) WithLogger(l *slog.Logger) *CreateTweetUseCase {
 	uc.logger = l
 	return uc
 }
 
-func (uc *TweetUseCase) CreateTweet(ctx context.Context, userID uuid.UUID, content string) (*domain.Tweet, error) {
+func (uc *CreateTweetUseCase) Execute(ctx context.Context, userID uuid.UUID, content string) (*domain.Tweet, error) {
 	if content == "" {
 		return nil, domain.ErrEmptyContent
 	}

@@ -9,22 +9,22 @@ import (
 	"uala/internal/domain"
 )
 
-type TimelineUseCase struct {
-	userRepo        domain.UserRepository
-	timelineRepo    domain.TimelineRepository
-	activityPub     domain.UserActivityPublisher
+type GetTimelineUseCase struct {
+	userRepo     domain.UserRepository
+	timelineRepo domain.TimelineRepository
+	activityPub  domain.UserActivityPublisher
 }
 
-func NewTimelineUseCase(userRepo domain.UserRepository, timelineRepo domain.TimelineRepository) *TimelineUseCase {
-	return &TimelineUseCase{userRepo: userRepo, timelineRepo: timelineRepo}
+func NewGetTimelineUseCase(userRepo domain.UserRepository, timelineRepo domain.TimelineRepository) *GetTimelineUseCase {
+	return &GetTimelineUseCase{userRepo: userRepo, timelineRepo: timelineRepo}
 }
 
-func (uc *TimelineUseCase) WithUserActivityPublisher(p domain.UserActivityPublisher) *TimelineUseCase {
+func (uc *GetTimelineUseCase) WithUserActivityPublisher(p domain.UserActivityPublisher) *GetTimelineUseCase {
 	uc.activityPub = p
 	return uc
 }
 
-func (uc *TimelineUseCase) GetTimeline(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error) {
+func (uc *GetTimelineUseCase) Execute(ctx context.Context, userID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error) {
 	if _, err := uc.userRepo.GetByID(ctx, userID); err != nil {
 		return nil, err
 	}

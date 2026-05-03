@@ -4,19 +4,20 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
-type UserUseCase struct {
+type CreateUserUseCase struct {
 	repo domain.UserRepository
 }
 
-func NewUserUseCase(repo domain.UserRepository) *UserUseCase {
-	return &UserUseCase{repo: repo}
+func NewCreateUserUseCase(repo domain.UserRepository) *CreateUserUseCase {
+	return &CreateUserUseCase{repo: repo}
 }
 
-func (uc *UserUseCase) CreateUser(ctx context.Context, username string) (*domain.User, error) {
+func (uc *CreateUserUseCase) Execute(ctx context.Context, username string) (*domain.User, error) {
 	if username == "" {
 		return nil, domain.ErrEmptyUsername
 	}
