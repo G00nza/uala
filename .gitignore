@@ -1,7 +1,6 @@
 .env
 *.exe
 /api
-/docs/superpowers
 .idea
 __pycache__/
 *.pyc
