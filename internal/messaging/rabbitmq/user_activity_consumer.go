@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"uala/internal/domain"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type UserActivityConsumer struct {
@@ -35,9 +36,11 @@ func (c *UserActivityConsumer) handleDelivery(ctx context.Context, d amqp.Delive
 		slog.ErrorContext(ctx, "rabbitmq: unmarshal user activity", "err", err)
 		return false, true
 	}
+
 	if err := c.repo.UpdateLastActive(ctx, evt.UserID, evt.LastActive); err != nil {
 		slog.ErrorContext(ctx, "rabbitmq: update last active", "user_id", evt.UserID, "err", err)
 		return false, true
 	}
+
 	return true, false
 }

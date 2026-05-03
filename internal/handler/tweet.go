@@ -4,8 +4,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 type tweetCreator interface {
@@ -26,6 +27,7 @@ func (h *TweetHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
 	var req struct {
 		Content string `json:"content"`
 	}
@@ -33,10 +35,12 @@ func (h *TweetHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+
 	tweet, err := h.svc.Execute(r.Context(), userID, req.Content)
 	if err != nil {
 		writeJSON(w, domainErrToStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, map[string]string{"id": tweet.ID.String()})
 }

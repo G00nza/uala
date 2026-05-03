@@ -2,15 +2,72 @@ package handler_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
 	"uala/internal/handler"
+
+	"github.com/google/uuid"
 )
+
+func TestIntegration_Follow_Create(t *testing.T) {
+	if testDB == nil {
+		t.Skip("integration only")
+	}
+	truncate(t)
+
+	// Arrange
+	aliceID := uuid.New()
+	bobID := uuid.New()
+	seedUser(t, aliceID, "alice")
+	seedUser(t, bobID, "bob")
+	pub := &spyFollowPublisher{}
+	srv := testServerWith(t, &noopTweetPublisher{}, pub)
+
+	// Act
+	followBody := fmt.Sprintf(`{"followee_id":"%s"}`, aliceID)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/follow",
+		strings.NewReader(followBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", bobID.String())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("follow: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Assert: response
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("want 201, got %d", resp.StatusCode)
+	}
+
+	// Assert: DB state
+	var count int
+	err = testDB.QueryRow(context.Background(),
+		"SELECT COUNT(*) FROM follows WHERE follower_id = $1 AND followee_id = $2",
+		bobID, aliceID).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("follow not found in DB: %v", err)
+	}
+
+	// Assert: event published
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	if len(pub.events) != 1 {
+		t.Fatalf("want 1 FollowCreatedEvent, got %d", len(pub.events))
+	}
+	if pub.events[0].FollowerID != bobID {
+		t.Errorf("event FollowerID: want %s, got %s", bobID, pub.events[0].FollowerID)
+	}
+	if pub.events[0].FolloweeID != aliceID {
+		t.Errorf("event FolloweeID: want %s, got %s", aliceID, pub.events[0].FolloweeID)
+	}
+}
 
 func TestFollowHandler_Follow_MissingUserID(t *testing.T) {
 	h := handler.NewFollowHandler(&mockFollowSvc{})

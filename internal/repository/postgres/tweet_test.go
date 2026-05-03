@@ -19,10 +19,29 @@ func TestTweetRepository_Create(t *testing.T) {
 		ID:        uuid.New(),
 		UserID:    user.ID,
 		Content:   "hello world",
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: time.Now().UTC().Truncate(time.Microsecond),
 	}
 	if err := r.tweet.Create(context.Background(), tweet); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+
+	var gotUserID uuid.UUID
+	var gotContent string
+	var gotCreatedAt time.Time
+	err := testDB.QueryRow(context.Background(),
+		`SELECT user_id, content, created_at FROM tweets WHERE id = $1`, tweet.ID,
+	).Scan(&gotUserID, &gotContent, &gotCreatedAt)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+	if gotUserID != tweet.UserID {
+		t.Errorf("want user_id %s, got %s", tweet.UserID, gotUserID)
+	}
+	if gotContent != tweet.Content {
+		t.Errorf("want content %q, got %q", tweet.Content, gotContent)
+	}
+	if !gotCreatedAt.Equal(tweet.CreatedAt) {
+		t.Errorf("want created_at %v, got %v", tweet.CreatedAt, gotCreatedAt)
 	}
 }
 

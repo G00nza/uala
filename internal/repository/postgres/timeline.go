@@ -4,10 +4,11 @@ import (
 	"context"
 	"slices"
 
+	"uala/internal/domain"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"uala/internal/domain"
 )
 
 type TimelineRepository struct {
@@ -57,23 +58,6 @@ func (r *TimelineRepository) GetTimeline(ctx context.Context, q domain.TimelineQ
 	}
 }
 
-func (r *TimelineRepository) getTimelineFirst(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT t.id, t.user_id, u.username, t.content, t.created_at
-		FROM tweets t
-		JOIN users u ON u.id = t.user_id
-		WHERE t.user_id = $1
-		   OR t.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1)
-		ORDER BY t.created_at DESC
-		LIMIT $2
-	`, q.UserID, q.Limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTimeline(rows)
-}
-
 func (r *TimelineRepository) getTimelineAfter(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT t.id, t.user_id, u.username, t.content, t.created_at
@@ -111,6 +95,23 @@ func (r *TimelineRepository) getTimelineBefore(ctx context.Context, q domain.Tim
 	}
 	slices.Reverse(items)
 	return items, nil
+}
+
+func (r *TimelineRepository) getTimelineFirst(ctx context.Context, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT t.id, t.user_id, u.username, t.content, t.created_at
+		FROM tweets t
+		JOIN users u ON u.id = t.user_id
+		WHERE t.user_id = $1
+		   OR t.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1)
+		ORDER BY t.created_at DESC
+		LIMIT $2
+	`, q.UserID, q.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTimeline(rows)
 }
 
 func scanTimeline(rows pgx.Rows) ([]domain.TweetItem, error) {

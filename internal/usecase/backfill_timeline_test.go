@@ -22,7 +22,7 @@ func TestBackfillTimeline_AppendsTweetsToFollower(t *testing.T) {
 	fanout := &mockTimelineFanout{}
 	uc := usecase.NewBackfillTimelineUseCase(
 		&mockUserTweetsRepo{tweets: tweets},
-		usecase.NewAppendTweetToTimelineUseCase(fanout),
+		fanout,
 		10,
 		24*time.Hour,
 	)
@@ -47,7 +47,7 @@ func TestBackfillTimeline_AppendsTweetsToFollower(t *testing.T) {
 func TestBackfillTimeline_RepoError_ReturnsError(t *testing.T) {
 	uc := usecase.NewBackfillTimelineUseCase(
 		&mockUserTweetsRepo{err: errors.New("db down")},
-		usecase.NewAppendTweetToTimelineUseCase(&mockTimelineFanout{}),
+		&mockTimelineFanout{},
 		10,
 		24*time.Hour,
 	)
@@ -63,7 +63,7 @@ func TestBackfillTimeline_EmptyTweets_NoAppendCalls(t *testing.T) {
 	fanout := &mockTimelineFanout{}
 	uc := usecase.NewBackfillTimelineUseCase(
 		&mockUserTweetsRepo{tweets: nil},
-		usecase.NewAppendTweetToTimelineUseCase(fanout),
+		fanout,
 		10,
 		24*time.Hour,
 	)
@@ -84,7 +84,7 @@ func TestBackfillTimeline_AppendErrorDoesNotFail(t *testing.T) {
 	tweets := []domain.TweetItem{{ID: uuid.New(), Content: "x", CreatedAt: time.Now()}}
 	uc := usecase.NewBackfillTimelineUseCase(
 		&mockUserTweetsRepo{tweets: tweets},
-		usecase.NewAppendTweetToTimelineUseCase(&mockTimelineFanout{err: errors.New("redis down")}),
+		&mockTimelineFanout{err: errors.New("redis down")},
 		10,
 		24*time.Hour,
 	)

@@ -6,16 +6,66 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
+
+	"uala/internal/domain"
+	postgresrepo "uala/internal/repository/postgres"
+	redisrepo "uala/internal/repository/redis"
+	"uala/internal/usecase"
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
-	"uala/internal/domain"
 )
 
+func TestIntegration_FollowCreatedConsumer_BackfillsTweetsToFollower(t *testing.T) {
+	if testDB == nil {
+		t.Skip("integration only")
+	}
+	truncate(t)
+	flushRedis(t)
+
+	// Arrange
+	aliceID := uuid.New()
+	bobID := uuid.New()
+	tweetID := uuid.New()
+	seedUser(t, aliceID, "alice")
+	seedUser(t, bobID, "bob")
+	seedTweet(t, tweetID, aliceID, "hello from alice", time.Now())
+
+	activityTTL := 24 * time.Hour
+	pgTimeline := postgresrepo.NewTimelineRepository(testDB)
+	redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgTimeline, 500).WithActivityTTL(activityTTL)
+	backfillUC := usecase.NewBackfillTimelineUseCase(pgTimeline, redisTimeline, 20, activityTTL)
+	consumer := &FollowCreatedConsumer{svc: backfillUC}
+
+	evt := domain.FollowCreatedEvent{FollowerID: bobID, FolloweeID: aliceID}
+	body, _ := json.Marshal(evt)
+
+	// Act
+	acked, nacked := consumer.handleDelivery(context.Background(), amqp.Delivery{Body: body})
+
+	// Assert: ack
+	if !acked || nacked {
+		t.Fatalf("want ack=true nack=false, got ack=%v nack=%v", acked, nacked)
+	}
+
+	// Assert: alice's tweet in Bob's Redis timeline
+	items, err := redisTimeline.GetTimeline(context.Background(), domain.TimelineQuery{UserID: bobID, Limit: 10})
+	if err != nil {
+		t.Fatalf("get bob timeline: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 tweet in bob's timeline, got %d", len(items))
+	}
+	if items[0].ID != tweetID {
+		t.Errorf("want tweet %s in bob's timeline, got %s", tweetID, items[0].ID)
+	}
+}
+
 type stubBackfillSvc struct {
-	mu         sync.Mutex
-	calls      []domain.FollowCreatedEvent
-	err        error
+	mu    sync.Mutex
+	calls []domain.FollowCreatedEvent
+	err   error
 }
 
 func (s *stubBackfillSvc) Execute(_ context.Context, followerID, followeeID uuid.UUID) error {

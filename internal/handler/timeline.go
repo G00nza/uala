@@ -5,8 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 type timelineGetter interface {
@@ -38,7 +39,6 @@ func (h *TimelineHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 
 	afterStr := r.URL.Query().Get("after")
 	beforeStr := r.URL.Query().Get("before")
-
 	if afterStr != "" && beforeStr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after and before are mutually exclusive"})
 		return
@@ -79,6 +79,16 @@ func (h *TimelineHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	nextCursor, prevCursor := h.getCursors(items)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tweets":      resp,
+		"next_cursor": nextCursor,
+		"prev_cursor": prevCursor,
+	})
+}
+
+func (h *TimelineHandler) getCursors(items []domain.TweetItem) (*string, *string) {
 	var nextCursor, prevCursor *string
 	if len(items) > 0 {
 		first := items[0].ID.String()
@@ -86,10 +96,5 @@ func (h *TimelineHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 		prevCursor = &first
 		nextCursor = &last
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"tweets":      resp,
-		"next_cursor": nextCursor,
-		"prev_cursor": prevCursor,
-	})
+	return nextCursor, prevCursor
 }

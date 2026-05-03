@@ -7,15 +7,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/errgroup"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const defaultFanoutWorkers = 100
 
 type FanoutTweetUseCase struct {
 	followRepo     domain.FollowRepository
-	appendUC       *AppendTweetToTimelineUseCase
+	fanout         domain.TimelineFanout
 	retryPublisher domain.FanoutRetryPublisher
 	activityTTL    time.Duration
 	fanoutWorkers  int
@@ -23,12 +26,12 @@ type FanoutTweetUseCase struct {
 
 func NewFanoutTweetUseCase(
 	followRepo domain.FollowRepository,
-	appendUC *AppendTweetToTimelineUseCase,
+	fanout domain.TimelineFanout,
 	activityTTL time.Duration,
 ) *FanoutTweetUseCase {
 	return &FanoutTweetUseCase{
 		followRepo:    followRepo,
-		appendUC:      appendUC,
+		fanout:        fanout,
 		activityTTL:   activityTTL,
 		fanoutWorkers: defaultFanoutWorkers,
 	}
@@ -71,40 +74,57 @@ func (uc *FanoutTweetUseCase) fanoutToFollowers(ctx context.Context, item domain
 	)
 
 	for _, fa := range followers {
-		remaining := uc.activityTTL - time.Since(fa.LastActive)
-		if remaining <= 0 {
+		ttl := uc.remainingTTL(fa)
+		if ttl <= 0 {
 			continue
 		}
+
 		eligible.Add(1)
-		fid := fa.ID
-		ttl := remaining
+		fid, ttl := fa.ID, ttl
 		sem <- struct{}{}
 		g.Go(func() error {
 			defer func() { <-sem }()
-			if err := uc.appendUC.Execute(gctx, fid, item, ttl); err != nil {
-				slog.ErrorContext(gctx, "fanout: append tweet", "follower_id", fid, "err", err)
-				if uc.retryPublisher != nil {
-					if pubErr := uc.retryPublisher.PublishFanoutRetry(ctx, domain.FanoutRetryEvent{
-						FollowerID: fid,
-						Tweet:      item,
-					}); pubErr != nil {
-						slog.ErrorContext(ctx, "fanout: publish retry", "follower_id", fid, "err", pubErr)
-						return nil
-					}
-					handled.Add(1)
-				}
-				return nil
+			if uc.appendToTimeline(gctx, ctx, fid, item, ttl) {
+				handled.Add(1)
 			}
-			handled.Add(1)
 			return nil
 		})
 	}
 
 	_ = g.Wait()
 
-	if eligible.Load() > 0 && handled.Load() == 0 {
+	if uc.allFanoutsFailed(eligible.Load(), handled.Load()) {
 		return errors.New("all fanout writes failed and no retries enqueued")
 	}
 	return nil
 }
 
+func (uc *FanoutTweetUseCase) allFanoutsFailed(eligible, handled int64) bool {
+	return eligible > 0 && handled == 0
+}
+
+func (uc *FanoutTweetUseCase) remainingTTL(fa domain.FollowerActivity) time.Duration {
+	return uc.activityTTL - time.Since(fa.LastActive)
+}
+
+func (uc *FanoutTweetUseCase) appendToTimeline(gctx, ctx context.Context, followerID uuid.UUID, item domain.TweetItem, ttl time.Duration) (ok bool) {
+	if err := uc.fanout.AppendTweet(gctx, followerID, item, ttl); err != nil {
+		slog.ErrorContext(gctx, "fanout: append tweet", "follower_id", followerID, "err", err)
+		return uc.enqueueRetry(ctx, followerID, item)
+	}
+	return true
+}
+
+func (uc *FanoutTweetUseCase) enqueueRetry(ctx context.Context, followerID uuid.UUID, item domain.TweetItem) (ok bool) {
+	if uc.retryPublisher == nil {
+		return false
+	}
+	if err := uc.retryPublisher.PublishFanoutRetry(ctx, domain.FanoutRetryEvent{
+		FollowerID: followerID,
+		Tweet:      item,
+	}); err != nil {
+		slog.ErrorContext(ctx, "fanout: publish retry", "follower_id", followerID, "err", err)
+		return false
+	}
+	return true
+}

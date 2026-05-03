@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"uala/internal/domain"
 	"uala/internal/metrics"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 const maxFanoutRetries = 10
@@ -33,26 +33,22 @@ func xDeathCount(d amqp.Delivery) int64 {
 	return 0
 }
 
-type tweetAppender interface {
-	Execute(ctx context.Context, followerID uuid.UUID, tweet domain.TweetItem, ttl time.Duration) error
-}
-
 type FanoutRetryConsumer struct {
 	conn          channeler
-	svc           tweetAppender
+	fanout        domain.TimelineFanout
 	deadLetterPub domain.FanoutRetryPublisher
 	activityTTL   time.Duration
 }
 
 func NewFanoutRetryConsumer(
 	conn channeler,
-	svc tweetAppender,
+	fanout domain.TimelineFanout,
 	deadLetterPub domain.FanoutRetryPublisher,
 	activityTTL time.Duration,
 ) *FanoutRetryConsumer {
 	return &FanoutRetryConsumer{
 		conn:          conn,
-		svc:           svc,
+		fanout:        fanout,
 		deadLetterPub: deadLetterPub,
 		activityTTL:   activityTTL,
 	}
@@ -86,9 +82,10 @@ func (c *FanoutRetryConsumer) handleDelivery(ctx context.Context, d amqp.Deliver
 		return true, false
 	}
 
-	if err := c.svc.Execute(ctx, evt.FollowerID, evt.Tweet, c.activityTTL); err != nil {
+	if err := c.fanout.AppendTweet(ctx, evt.FollowerID, evt.Tweet, c.activityTTL); err != nil {
 		slog.ErrorContext(ctx, "rabbitmq: fanout retry append", "follower_id", evt.FollowerID, "err", err)
 		return false, true
 	}
+
 	return true, false
 }

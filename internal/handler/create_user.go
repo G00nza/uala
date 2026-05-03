@@ -27,10 +27,12 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+
 	user, err := h.svc.Execute(r.Context(), req.Username)
 	if err != nil {
 		writeJSON(w, domainErrToStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, map[string]string{"id": user.ID.String()})
 }

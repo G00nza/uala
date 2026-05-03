@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 type GetTimelineUseCase struct {
@@ -28,6 +29,7 @@ func (uc *GetTimelineUseCase) Execute(ctx context.Context, userID uuid.UUID, aft
 	if _, err := uc.userRepo.GetByID(ctx, userID); err != nil {
 		return nil, err
 	}
+
 	items, err := uc.timelineRepo.GetTimeline(ctx, domain.TimelineQuery{
 		UserID: userID,
 		After:  after,
@@ -37,6 +39,7 @@ func (uc *GetTimelineUseCase) Execute(ctx context.Context, userID uuid.UUID, aft
 	if err != nil {
 		return nil, err
 	}
+
 	if uc.activityPub != nil {
 		evt := domain.UserActivityEvent{UserID: userID, LastActive: time.Now()}
 		go func() {

@@ -5,10 +5,11 @@ import (
 	"errors"
 	"time"
 
+	"uala/internal/domain"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"uala/internal/domain"
 )
 
 type FollowRepository struct {
@@ -31,6 +32,7 @@ func (r *FollowRepository) Create(ctx context.Context, f *domain.Follow) error {
 		}
 		return err
 	}
+
 	return nil
 }
 
@@ -40,6 +42,7 @@ func (r *FollowRepository) Exists(ctx context.Context, followerID, followeeID uu
 		`SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id=$1 AND followee_id=$2)`,
 		followerID, followeeID,
 	).Scan(&exists)
+
 	return exists, err
 }
 
@@ -60,9 +63,11 @@ func (r *FollowRepository) GetFollowers(ctx context.Context, followeeID uuid.UUI
 		}
 		ids = append(ids, id)
 	}
+
 	if ids == nil {
 		ids = []uuid.UUID{}
 	}
+
 	return ids, rows.Err()
 }
 
@@ -78,6 +83,7 @@ func (r *FollowRepository) GetActiveFollowers(ctx context.Context, followeeID uu
 	if err != nil {
 		return nil, err
 	}
+
 	defer rows.Close()
 
 	var result []domain.FollowerActivity
@@ -91,5 +97,6 @@ func (r *FollowRepository) GetActiveFollowers(ctx context.Context, followeeID uu
 	if result == nil {
 		result = []domain.FollowerActivity{}
 	}
+
 	return result, rows.Err()
 }

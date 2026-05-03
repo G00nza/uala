@@ -7,10 +7,59 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
 	"uala/internal/handler"
+
+	"github.com/google/uuid"
 )
+
+func TestIntegration_Timeline_Get(t *testing.T) {
+	if testDB == nil {
+		t.Skip("integration only")
+	}
+	truncate(t)
+	flushRedis(t)
+
+	// Arrange
+	aliceID := uuid.New()
+	bobID := uuid.New()
+	tweetID := uuid.New()
+	seedUser(t, aliceID, "alice")
+	seedUser(t, bobID, "bob")
+	seedTweet(t, tweetID, aliceID, "hello from alice", time.Now())
+	seedFollow(t, bobID, aliceID)
+	srv := testServer(t)
+
+	// Act
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/timeline", nil)
+	req.Header.Set("X-User-ID", bobID.String())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get timeline: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Assert: response
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	tweets, ok := result["tweets"].([]any)
+	if !ok {
+		t.Fatalf("expected tweets array in response")
+	}
+	if len(tweets) != 1 {
+		t.Fatalf("want 1 tweet, got %d", len(tweets))
+	}
+	tweet := tweets[0].(map[string]any)
+	if tweet["content"] != "hello from alice" {
+		t.Errorf("want content 'hello from alice', got %v", tweet["content"])
+	}
+	if tweet["username"] != "alice" {
+		t.Errorf("want username 'alice', got %v", tweet["username"])
+	}
+}
 
 func TestTimelineHandler_GetTimeline_Empty(t *testing.T) {
 	svc := &mockTimelineSvc{items: []domain.TweetItem{}}
@@ -145,7 +194,7 @@ func TestTimelineHandler_GetTimeline_EmptyResult_NullCursors(t *testing.T) {
 	}
 }
 
-func TestTimelineHandler_GetTimeline_AfterPassedToService(t *testing.T) {
+func TestTimelineHandler_GetTimeline_AfterCursorPassedToService(t *testing.T) {
 	afterID := uuid.New()
 	svc := &mockTimelineSvc{items: []domain.TweetItem{}}
 	h := handler.NewTimelineHandler(svc)

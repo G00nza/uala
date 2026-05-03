@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"sync"
 
 	"github.com/google/uuid"
 	"uala/internal/domain"
@@ -16,6 +17,30 @@ func (n *noopTweetPublisher) PublishTweetCreated(_ context.Context, _ domain.Twe
 type noopFollowPublisher struct{}
 
 func (n *noopFollowPublisher) PublishFollowCreated(_ context.Context, _ domain.FollowCreatedEvent) error {
+	return nil
+}
+
+type spyTweetPublisher struct {
+	mu     sync.Mutex
+	events []domain.TweetCreatedEvent
+}
+
+func (s *spyTweetPublisher) PublishTweetCreated(_ context.Context, evt domain.TweetCreatedEvent) error {
+	s.mu.Lock()
+	s.events = append(s.events, evt)
+	s.mu.Unlock()
+	return nil
+}
+
+type spyFollowPublisher struct {
+	mu     sync.Mutex
+	events []domain.FollowCreatedEvent
+}
+
+func (s *spyFollowPublisher) PublishFollowCreated(_ context.Context, evt domain.FollowCreatedEvent) error {
+	s.mu.Lock()
+	s.events = append(s.events, evt)
+	s.mu.Unlock()
 	return nil
 }
 

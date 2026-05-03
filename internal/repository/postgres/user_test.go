@@ -12,9 +12,24 @@ import (
 func TestUserRepository_Create(t *testing.T) {
 	r := setup(t)
 
-	u := &domain.User{ID: uuid.New(), Username: "alice", CreatedAt: time.Now().UTC()}
+	u := &domain.User{ID: uuid.New(), Username: "alice", CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
 	if err := r.user.Create(context.Background(), u); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+
+	var gotUsername string
+	var gotCreatedAt time.Time
+	err := testDB.QueryRow(context.Background(),
+		`SELECT username, created_at FROM users WHERE id = $1`, u.ID,
+	).Scan(&gotUsername, &gotCreatedAt)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+	if gotUsername != u.Username {
+		t.Errorf("want username %q, got %q", u.Username, gotUsername)
+	}
+	if !gotCreatedAt.Equal(u.CreatedAt) {
+		t.Errorf("want created_at %v, got %v", u.CreatedAt, gotCreatedAt)
 	}
 }
 

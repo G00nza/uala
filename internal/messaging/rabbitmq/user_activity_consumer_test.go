@@ -8,10 +8,48 @@ import (
 	"testing"
 	"time"
 
+	"uala/internal/domain"
+	postgresrepo "uala/internal/repository/postgres"
+
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
-	"uala/internal/domain"
 )
+
+func TestIntegration_UserActivityConsumer_UpdatesLastActive(t *testing.T) {
+	if testDB == nil {
+		t.Skip("integration only")
+	}
+	truncate(t)
+
+	// Arrange
+	aliceID := uuid.New()
+	seedUser(t, aliceID, "alice")
+	userRepo := postgresrepo.NewUserRepository(testDB)
+	consumer := &UserActivityConsumer{repo: userRepo}
+
+	lastActive := time.Now().UTC().Truncate(time.Millisecond)
+	evt := domain.UserActivityEvent{UserID: aliceID, LastActive: lastActive}
+	body, _ := json.Marshal(evt)
+
+	// Act
+	acked, nacked := consumer.handleDelivery(context.Background(), amqp.Delivery{Body: body})
+
+	// Assert: ack
+	if !acked || nacked {
+		t.Fatalf("want ack=true nack=false, got ack=%v nack=%v", acked, nacked)
+	}
+
+	// Assert: last_active updated in DB
+	var stored time.Time
+	err := testDB.QueryRow(context.Background(),
+		"SELECT last_active FROM users WHERE id = $1", aliceID).Scan(&stored)
+	if err != nil {
+		t.Fatalf("query last_active: %v", err)
+	}
+	if !stored.Equal(lastActive) {
+		t.Errorf("want last_active %v, got %v", lastActive, stored)
+	}
+}
 
 type stubUserActivityRepo struct {
 	mu     sync.Mutex

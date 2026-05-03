@@ -48,8 +48,7 @@ func makeActiveFollowers(ids []uuid.UUID) []domain.FollowerActivity {
 }
 
 func newFanoutUC(fanout domain.TimelineFanout, followRepo domain.FollowRepository) *usecase.FanoutTweetUseCase {
-	appendUC := usecase.NewAppendTweetToTimelineUseCase(fanout)
-	return usecase.NewFanoutTweetUseCase(followRepo, appendUC, 24*time.Hour)
+	return usecase.NewFanoutTweetUseCase(followRepo, fanout, 24*time.Hour)
 }
 
 func TestFanoutTweet_IsConcurrent(t *testing.T) {
@@ -109,10 +108,9 @@ func TestFanoutTweet_AllFail_ReturnsError(t *testing.T) {
 func TestFanoutTweet_PublishesRetryOnFailure(t *testing.T) {
 	followerID := uuid.New()
 	retryPub := &mockFanoutRetryPublisher{}
-	appendUC := usecase.NewAppendTweetToTimelineUseCase(&errorFanout{})
 	uc := usecase.NewFanoutTweetUseCase(
 		&mockFollowRepo{activeFollowers: makeActiveFollowers([]uuid.UUID{followerID})},
-		appendUC,
+		&errorFanout{},
 		24*time.Hour,
 	).WithRetryPublisher(retryPub)
 
@@ -135,10 +133,9 @@ func TestFanoutTweet_PublishesRetryOnFailure(t *testing.T) {
 
 func TestFanoutTweet_RetryCountsAsHandled(t *testing.T) {
 	followers := makeActiveFollowers([]uuid.UUID{uuid.New(), uuid.New()})
-	appendUC := usecase.NewAppendTweetToTimelineUseCase(&errorFanout{})
 	uc := usecase.NewFanoutTweetUseCase(
 		&mockFollowRepo{activeFollowers: followers},
-		appendUC,
+		&errorFanout{},
 		24*time.Hour,
 	).WithRetryPublisher(&mockFanoutRetryPublisher{})
 
@@ -159,7 +156,7 @@ func TestFanoutTweet_AllExpiredFollowers_OnlyAuthorReceivesTweet(t *testing.T) {
 	trackFanout := &mockTimelineFanout{}
 	uc := usecase.NewFanoutTweetUseCase(
 		&mockFollowRepo{activeFollowers: expired},
-		usecase.NewAppendTweetToTimelineUseCase(trackFanout),
+		trackFanout,
 		24*time.Hour,
 	)
 

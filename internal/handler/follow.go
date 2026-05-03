@@ -25,6 +25,7 @@ func (h *FollowHandler) Follow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
 	var req struct {
 		FolloweeID string `json:"followee_id"`
 	}
@@ -32,14 +33,17 @@ func (h *FollowHandler) Follow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "followee_id is required"})
 		return
 	}
+
 	followeeID, err := uuid.Parse(req.FolloweeID)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "followee_id must be a valid UUID"})
 		return
 	}
+
 	if err := h.svc.Execute(r.Context(), followerID, followeeID); err != nil {
 		writeJSON(w, domainErrToStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, struct{}{})
 }

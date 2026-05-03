@@ -6,8 +6,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 type CreateTweetUseCase struct {
@@ -39,13 +40,16 @@ func (uc *CreateTweetUseCase) Execute(ctx context.Context, userID uuid.UUID, con
 	if content == "" {
 		return nil, domain.ErrEmptyContent
 	}
+
 	if utf8.RuneCountInString(content) > 280 {
 		return nil, domain.ErrContentTooLong
 	}
+
 	user, err := uc.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
+
 	t := &domain.Tweet{
 		ID:        uuid.New(),
 		UserID:    userID,
@@ -55,6 +59,7 @@ func (uc *CreateTweetUseCase) Execute(ctx context.Context, userID uuid.UUID, con
 	if err := uc.tweetRepo.Create(ctx, t); err != nil {
 		return nil, err
 	}
+
 	evt := domain.TweetCreatedEvent{
 		TweetID:   t.ID,
 		UserID:    t.UserID,

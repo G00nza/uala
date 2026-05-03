@@ -45,11 +45,11 @@ repository    messaging
  redis)
 ```
 
-**`internal/domain/`** — Pure Go structs and interfaces. All repository and publisher contracts live here. No framework dependencies. `errors.go` defines the sentinel errors that handlers map to HTTP status codes.
+**`internal/domain/`** — Pure Go structs and interfaces split across focused files: `events.go` (event types), `publishers.go` (publisher interfaces), `timeline.go` (timeline types), `follow.go`, `user.go`, `tweet.go`, `errors.go`. No framework dependencies. `errors.go` defines the sentinel errors that handlers map to HTTP status codes.
 
-**`internal/usecase/`** — Concrete structs (no interfaces, per ADR-001). Each use case owns one operation exposed as `Execute`: `CreateUserUseCase`, `CreateTweetUseCase`, `FollowUserUseCase`, `GetTimelineUseCase`. Use cases validate business rules and orchestrate repositories + publishers.
+**`internal/usecase/`** — Concrete structs (no interfaces, per ADR-001). Each use case owns one operation exposed as `Execute`: `CreateUserUseCase`, `CreateTweetUseCase`, `FollowUserUseCase`, `GetTimelineUseCase`, `FanoutTweetUseCase`, `BackfillTimelineUseCase`. Use cases validate business rules and orchestrate repositories + publishers.
 
-**`internal/handler/`** — HTTP layer using stdlib `net/http`. Handlers depend directly on concrete use cases. For unit testing, each handler defines a private minimal interface used only in `*_test.go` files. Integration tests (`INTEGRATION=1`) spin up a real `httptest.Server` with Postgres + Redis.
+**`internal/handler/`** — HTTP layer using stdlib `net/http`. Handlers depend directly on concrete use cases. One file per handler (e.g. `create_user.go`, `tweet.go`). For unit testing, each handler defines a private minimal interface used only in `*_test.go` files. Integration tests (`INTEGRATION=1`) spin up a real `httptest.Server` with Postgres + Redis.
 
 **`internal/repository/postgres/`** and **`internal/repository/redis/`** — Infrastructure implementing domain interfaces. `redis.TimelineRepository` wraps the Postgres timeline repo: cache hit → Redis; miss → Postgres + lazy write to Redis.
 
@@ -80,10 +80,12 @@ Two keys per user:
 
 `AppendTweet` uses `ExpireNX` (set TTL only on new keys). Reads use `Expire` to renew TTL to full `ACTIVITY_TTL` window. Users that go inactive have their keys expire naturally.
 
-## Testing strategy (ADR-001)
+## Testing strategy (ADR-004)
 
-- **Integration tests** (`INTEGRATION=1`): hit real Postgres + Redis, run full handler→repo flow. These are primary for happy-path coverage.
-- **Unit tests with mocks**: cover input validation, error-to-HTTP-status mapping, serialization. Mocks live in `mocks_test.go` files and are package-private.
+Two levels of test. Tests are organized one file per feature (e.g. `follow_test.go`, `tweet_test.go`) rather than a single monolithic integration file.
+
+- **Integration tests** (`INTEGRATION=1`): arrange state directly via raw SQL seed helpers, execute the operation under test, and assert both the HTTP/return value and the resulting DB state via raw SQL queries. These are primary for happy-path coverage. Each package has a `setup_test.go` with `TestMain` that connects to real Postgres + Redis and auto-migrates.
+- **Unit tests with mocks**: cover input validation, error-to-HTTP-status mapping, serialization. Mocks live in `mocks_test.go` and are package-private.
 - The serialization contract between publisher and consumer is guaranteed by shared domain types in `domain/events.go` — no async E2E test needed.
 
 ## Configuration

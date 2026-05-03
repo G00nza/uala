@@ -12,6 +12,7 @@ func Connect(ctx context.Context, dsn string, opts ...func(*pgxpool.Config)) (*p
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool parse config: %w", err)
 	}
+
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -19,8 +20,10 @@ func Connect(ctx context.Context, dsn string, opts ...func(*pgxpool.Config)) (*p
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool.NewWithConfig: %w", err)
 	}
+
 	if err := pool.Ping(ctx); err != nil {
 		return nil, fmt.Errorf("postgres ping: %w", err)
 	}
+
 	return pool, nil
 }

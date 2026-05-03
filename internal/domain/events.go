@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,32 +19,12 @@ type FollowCreatedEvent struct {
 	FolloweeID uuid.UUID `json:"followee_id"`
 }
 
-type TweetEventPublisher interface {
-	PublishTweetCreated(ctx context.Context, evt TweetCreatedEvent) error
-}
-
-type FollowEventPublisher interface {
-	PublishFollowCreated(ctx context.Context, evt FollowCreatedEvent) error
-}
-
-type UserTweetsRepository interface {
-	GetLatestByUser(ctx context.Context, userID uuid.UUID, limit int) ([]TweetItem, error)
-}
-
 type FanoutRetryEvent struct {
 	FollowerID uuid.UUID `json:"follower_id"`
 	Tweet      TweetItem `json:"tweet"`
 }
 
-type FanoutRetryPublisher interface {
-	PublishFanoutRetry(ctx context.Context, evt FanoutRetryEvent) error
-}
-
 type UserActivityEvent struct {
 	UserID     uuid.UUID `json:"user_id"`
 	LastActive time.Time `json:"last_active"`
-}
-
-type UserActivityPublisher interface {
-	PublishUserActivity(ctx context.Context, evt UserActivityEvent) error
 }

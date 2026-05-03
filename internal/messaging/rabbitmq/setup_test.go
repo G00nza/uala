@@ -1,24 +1,19 @@
-package handler_test
+package rabbitmq
 
 import (
 	"context"
-	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
-
-	"uala/internal/domain"
-	"uala/internal/handler"
-	"uala/internal/repository/postgres"
-	redisrepo "uala/internal/repository/redis"
-	"uala/internal/usecase"
-	"uala/migrations"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/redis/go-redis/v9"
+	postgresrepo "uala/internal/repository/postgres"
+	redisrepo "uala/internal/repository/redis"
+	"uala/migrations"
 )
 
 var (
@@ -40,7 +35,7 @@ func TestMain(m *testing.M) {
 		redisURL = "redis://localhost:6379/0"
 	}
 
-	pool, err := postgres.Connect(context.Background(), dsn)
+	pool, err := postgresrepo.Connect(context.Background(), dsn)
 	if err != nil {
 		panic("connect: " + err.Error())
 	}
@@ -84,30 +79,6 @@ func flushRedis(t *testing.T) {
 	}
 }
 
-func testServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	return testServerWith(t, &noopTweetPublisher{}, &noopFollowPublisher{})
-}
-
-func testServerWith(t *testing.T, tweetPub domain.TweetEventPublisher, followPub domain.FollowEventPublisher) *httptest.Server {
-	t.Helper()
-	userRepo := postgres.NewUserRepository(testDB)
-	tweetRepo := postgres.NewTweetRepository(testDB)
-	followRepo := postgres.NewFollowRepository(testDB)
-	pgTimeline := postgres.NewTimelineRepository(testDB)
-	redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgTimeline, 500)
-
-	router := handler.NewRouter(
-		handler.NewUserHandler(usecase.NewCreateUserUseCase(userRepo)),
-		handler.NewTweetHandler(usecase.NewCreateTweetUseCase(userRepo, tweetRepo, tweetPub)),
-		handler.NewFollowHandler(usecase.NewFollowUserUseCase(userRepo, followRepo, followPub)),
-		handler.NewTimelineHandler(usecase.NewGetTimelineUseCase(userRepo, redisTimeline)),
-	)
-	srv := httptest.NewServer(router)
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 func seedUser(t *testing.T, id uuid.UUID, username string) {
 	t.Helper()
 	_, err := testDB.Exec(context.Background(),
@@ -132,5 +103,14 @@ func seedFollow(t *testing.T, followerID, followeeID uuid.UUID) {
 		"INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)", followerID, followeeID)
 	if err != nil {
 		t.Fatalf("seedFollow: %v", err)
+	}
+}
+
+func setLastActive(t *testing.T, userID uuid.UUID, lastActive time.Time) {
+	t.Helper()
+	_, err := testDB.Exec(context.Background(),
+		"UPDATE users SET last_active = $1 WHERE id = $2", lastActive, userID)
+	if err != nil {
+		t.Fatalf("setLastActive: %v", err)
 	}
 }

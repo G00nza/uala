@@ -30,16 +30,20 @@ func (uc *FollowUserUseCase) Execute(ctx context.Context, followerID, followeeID
 	if followerID == followeeID {
 		return domain.ErrSelfFollow
 	}
+
 	exists, err := uc.followRepo.Exists(ctx, followerID, followeeID)
 	if err != nil {
 		return err
 	}
+
 	if exists {
 		return domain.ErrAlreadyFollowing
 	}
+
 	if _, err := uc.userRepo.GetByID(ctx, followeeID); err != nil {
 		return err
 	}
+
 	f := &domain.Follow{
 		FollowerID: followerID,
 		FolloweeID: followeeID,
@@ -48,6 +52,7 @@ func (uc *FollowUserUseCase) Execute(ctx context.Context, followerID, followeeID
 	if err := uc.followRepo.Create(ctx, f); err != nil {
 		return err
 	}
+
 	evt := domain.FollowCreatedEvent{
 		FollowerID: followerID,
 		FolloweeID: followeeID,

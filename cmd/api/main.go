@@ -82,14 +82,13 @@ func main() {
 
 	publisher := rabbitmq.NewPublisher(amqpConn)
 
-	appendTweetUC := usecase.NewAppendTweetToTimelineUseCase(redisTimeline)
-	fanoutTweetUC := usecase.NewFanoutTweetUseCase(followRepo, appendTweetUC, cfg.ActivityTTL).
+	fanoutTweetUC := usecase.NewFanoutTweetUseCase(followRepo, redisTimeline, cfg.ActivityTTL).
 		WithRetryPublisher(publisher)
-	backfillUC := usecase.NewBackfillTimelineUseCase(pgTimelineRepo, appendTweetUC, cfg.FollowBackfillLimit, cfg.ActivityTTL)
+	backfillUC := usecase.NewBackfillTimelineUseCase(pgTimelineRepo, redisTimeline, cfg.FollowBackfillLimit, cfg.ActivityTTL)
 
 	go rabbitmq.NewTweetCreatedConsumer(amqpConn, fanoutTweetUC).Consume(ctx)
 	go rabbitmq.NewFollowCreatedConsumer(amqpConn, backfillUC).Consume(ctx)
-	go rabbitmq.NewFanoutRetryConsumer(amqpConn, appendTweetUC, rabbitmq.NewDeadLetterPublisher(publisher), cfg.ActivityTTL).Consume(ctx)
+	go rabbitmq.NewFanoutRetryConsumer(amqpConn, redisTimeline, rabbitmq.NewDeadLetterPublisher(publisher), cfg.ActivityTTL).Consume(ctx)
 	go rabbitmq.NewUserActivityConsumer(amqpConn, userRepo).Consume(ctx)
 
 	createUserUseCase := usecase.NewCreateUserUseCase(userRepo)

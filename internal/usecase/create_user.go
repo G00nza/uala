@@ -21,6 +21,7 @@ func (uc *CreateUserUseCase) Execute(ctx context.Context, username string) (*dom
 	if username == "" {
 		return nil, domain.ErrEmptyUsername
 	}
+
 	u := &domain.User{
 		ID:        uuid.New(),
 		Username:  username,
@@ -29,5 +30,6 @@ func (uc *CreateUserUseCase) Execute(ctx context.Context, username string) (*dom
 	if err := uc.repo.Create(ctx, u); err != nil {
 		return nil, err
 	}
+
 	return u, nil
 }

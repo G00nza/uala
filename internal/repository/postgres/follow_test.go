@@ -24,9 +24,28 @@ func TestFollowRepository_Create(t *testing.T) {
 	alice := seedUser(t, r.user, "alice")
 	bob := seedUser(t, r.user, "bob")
 
-	f := &domain.Follow{FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC()}
+	f := &domain.Follow{FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
 	if err := r.follow.Create(context.Background(), f); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+
+	var gotFollowerID, gotFolloweeID uuid.UUID
+	var gotCreatedAt time.Time
+	err := testDB.QueryRow(context.Background(),
+		`SELECT follower_id, followee_id, created_at FROM follows WHERE follower_id = $1 AND followee_id = $2`,
+		alice.ID, bob.ID,
+	).Scan(&gotFollowerID, &gotFolloweeID, &gotCreatedAt)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+	if gotFollowerID != alice.ID {
+		t.Errorf("want follower_id %s, got %s", alice.ID, gotFollowerID)
+	}
+	if gotFolloweeID != bob.ID {
+		t.Errorf("want followee_id %s, got %s", bob.ID, gotFolloweeID)
+	}
+	if !gotCreatedAt.Equal(f.CreatedAt) {
+		t.Errorf("want created_at %v, got %v", f.CreatedAt, gotCreatedAt)
 	}
 }
 

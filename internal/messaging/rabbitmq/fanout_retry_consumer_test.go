@@ -8,10 +8,67 @@ import (
 	"testing"
 	"time"
 
+	"uala/internal/domain"
+	postgresrepo "uala/internal/repository/postgres"
+	redisrepo "uala/internal/repository/redis"
+
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
-	"uala/internal/domain"
 )
+
+func makeFanoutRetryDelivery(body []byte, deathCount int64) amqp.Delivery {
+	headers := amqp.Table{}
+	if deathCount > 0 {
+		headers["x-death"] = []interface{}{
+			amqp.Table{"queue": QueueFanoutRetry, "count": deathCount},
+		}
+	}
+	return amqp.Delivery{Body: body, Headers: headers}
+}
+
+func TestIntegration_FanoutRetryConsumer_AppendsToRedisTimeline(t *testing.T) {
+	if testDB == nil {
+		t.Skip("integration only")
+	}
+	flushRedis(t)
+
+	// Arrange
+	followerID := uuid.New()
+	tweetID := uuid.New()
+	activityTTL := 24 * time.Hour
+	pgTimeline := postgresrepo.NewTimelineRepository(testDB)
+	redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgTimeline, 500).WithActivityTTL(activityTTL)
+	consumer := &FanoutRetryConsumer{fanout: redisTimeline, activityTTL: activityTTL}
+
+	evt := domain.FanoutRetryEvent{
+		FollowerID: followerID,
+		Tweet: domain.TweetItem{
+			ID:        tweetID,
+			UserID:    uuid.New(),
+			Username:  "alice",
+			Content:   "retry me",
+			CreatedAt: time.Now(),
+		},
+	}
+	body, _ := json.Marshal(evt)
+
+	// Act
+	acked, nacked := consumer.handleDelivery(context.Background(), makeFanoutRetryDelivery(body, 0))
+
+	// Assert: ack
+	if !acked || nacked {
+		t.Fatalf("want ack=true nack=false, got ack=%v nack=%v", acked, nacked)
+	}
+
+	// Assert: tweet written to Redis
+	count, err := testRDB.ZCard(context.Background(), "timeline:"+followerID.String()).Result()
+	if err != nil {
+		t.Fatalf("ZCard: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("want 1 tweet in redis timeline, got %d", count)
+	}
+}
 
 type stubTweetAppender struct {
 	mu    sync.Mutex
@@ -19,7 +76,7 @@ type stubTweetAppender struct {
 	err   error
 }
 
-func (s *stubTweetAppender) Execute(_ context.Context, _ uuid.UUID, _ domain.TweetItem, _ time.Duration) error {
+func (s *stubTweetAppender) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.TweetItem, _ time.Duration) error {
 	s.mu.Lock()
 	s.calls++
 	s.mu.Unlock()
@@ -39,19 +96,9 @@ func (s *stubDeadLetterPub) PublishFanoutRetry(_ context.Context, evt domain.Fan
 	return s.err
 }
 
-func makeFanoutRetryDelivery(body []byte, deathCount int64) amqp.Delivery {
-	headers := amqp.Table{}
-	if deathCount > 0 {
-		headers["x-death"] = []interface{}{
-			amqp.Table{"queue": QueueFanoutRetry, "count": deathCount},
-		}
-	}
-	return amqp.Delivery{Body: body, Headers: headers}
-}
-
 func TestFanoutRetryConsumer_AcksOnSuccess(t *testing.T) {
 	appender := &stubTweetAppender{}
-	c := &FanoutRetryConsumer{svc: appender, activityTTL: 24 * time.Hour}
+	c := &FanoutRetryConsumer{fanout: appender, activityTTL: 24 * time.Hour}
 
 	evt := domain.FanoutRetryEvent{FollowerID: uuid.New(), Tweet: domain.TweetItem{ID: uuid.New(), CreatedAt: time.Now()}}
 	body, _ := json.Marshal(evt)
@@ -68,7 +115,7 @@ func TestFanoutRetryConsumer_AcksOnSuccess(t *testing.T) {
 
 func TestFanoutRetryConsumer_NacksOnAppendFailure(t *testing.T) {
 	appender := &stubTweetAppender{err: errors.New("redis down")}
-	c := &FanoutRetryConsumer{svc: appender, activityTTL: 24 * time.Hour}
+	c := &FanoutRetryConsumer{fanout: appender, activityTTL: 24 * time.Hour}
 
 	evt := domain.FanoutRetryEvent{FollowerID: uuid.New(), Tweet: domain.TweetItem{ID: uuid.New(), CreatedAt: time.Now()}}
 	body, _ := json.Marshal(evt)
@@ -87,7 +134,7 @@ func TestFanoutRetryConsumer_DeadLettersAt10(t *testing.T) {
 	dlq := &stubDeadLetterPub{}
 	followerID := uuid.New()
 	c := &FanoutRetryConsumer{
-		svc:           &stubTweetAppender{err: errors.New("redis down")},
+		fanout:        &stubTweetAppender{err: errors.New("redis down")},
 		deadLetterPub: dlq,
 		activityTTL:   24 * time.Hour,
 	}
@@ -114,7 +161,7 @@ func TestFanoutRetryConsumer_DeadLettersAt10(t *testing.T) {
 }
 
 func TestFanoutRetryConsumer_NacksOnBadJSON(t *testing.T) {
-	c := &FanoutRetryConsumer{svc: &stubTweetAppender{}, activityTTL: 24 * time.Hour}
+	c := &FanoutRetryConsumer{fanout: &stubTweetAppender{}, activityTTL: 24 * time.Hour}
 
 	acked, nacked := c.handleDelivery(context.Background(), amqp.Delivery{Body: []byte("bad-json")})
 

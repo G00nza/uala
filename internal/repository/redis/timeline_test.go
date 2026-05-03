@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -38,6 +39,30 @@ func TestRedisTimeline_AppendAndGet(t *testing.T) {
 		t.Fatalf("AppendTweet: %v", err)
 	}
 
+	key := "timeline:" + userID.String()
+	dataKey := "timeline:data:" + userID.String()
+
+	if n := testRDB.ZCard(context.Background(), key).Val(); n != 1 {
+		t.Errorf("ZCard: want 1, got %d", n)
+	}
+	if score := testRDB.ZScore(context.Background(), key, item.ID.String()).Val(); score != float64(item.CreatedAt.Unix()) {
+		t.Errorf("ZScore: want %v, got %v", float64(item.CreatedAt.Unix()), score)
+	}
+	raw, err := testRDB.HGet(context.Background(), dataKey, item.ID.String()).Result()
+	if err != nil {
+		t.Fatalf("HGet: %v", err)
+	}
+	var stored domain.TweetItem
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if stored.Content != item.Content {
+		t.Errorf("stored content: want %q, got %q", item.Content, stored.Content)
+	}
+	if stored.Username != item.Username {
+		t.Errorf("stored username: want %q, got %q", item.Username, stored.Username)
+	}
+
 	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
 		t.Fatalf("GetTimeline: %v", err)
@@ -69,6 +94,24 @@ func TestRedisTimeline_MultipleItems_OrderedByScoreDesc(t *testing.T) {
 
 	_ = repo.AppendTweet(context.Background(), userID, older, 0)
 	_ = repo.AppendTweet(context.Background(), userID, newer, 0)
+
+	key := "timeline:" + userID.String()
+	if n := testRDB.ZCard(context.Background(), key).Val(); n != 2 {
+		t.Errorf("ZCard: want 2, got %d", n)
+	}
+	members, err := testRDB.ZRevRange(context.Background(), key, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("ZRevRange: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("want 2 members, got %d", len(members))
+	}
+	if members[0] != newer.ID.String() {
+		t.Errorf("first member: want newer tweet ID, got %s", members[0])
+	}
+	if members[1] != older.ID.String() {
+		t.Errorf("second member: want older tweet ID, got %s", members[1])
+	}
 
 	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {
@@ -176,6 +219,27 @@ func TestRedisTimeline_AppendTweet_DeduplicatesByTweetID(t *testing.T) {
 
 	_ = repo.AppendTweet(context.Background(), userID, base, 0)
 	_ = repo.AppendTweet(context.Background(), userID, redelivered, 0)
+
+	key := "timeline:" + userID.String()
+	dataKey := "timeline:data:" + userID.String()
+
+	if n := testRDB.ZCard(context.Background(), key).Val(); n != 1 {
+		t.Errorf("ZCard: want 1, got %d", n)
+	}
+	if n := testRDB.HLen(context.Background(), dataKey).Val(); n != 1 {
+		t.Errorf("HLen: want 1, got %d", n)
+	}
+	raw, err := testRDB.HGet(context.Background(), dataKey, tweetID.String()).Result()
+	if err != nil {
+		t.Fatalf("HGet: %v", err)
+	}
+	var stored domain.TweetItem
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if stored.Content != "original" {
+		t.Errorf("HSetNX should preserve original content, got %q", stored.Content)
+	}
 
 	items, err := repo.GetTimeline(context.Background(), domain.TimelineQuery{UserID: userID, Limit: 500})
 	if err != nil {

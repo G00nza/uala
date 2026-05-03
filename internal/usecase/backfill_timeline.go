@@ -5,26 +5,27 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 type BackfillTimelineUseCase struct {
 	userTweetsRepo domain.UserTweetsRepository
-	appendUC       *AppendTweetToTimelineUseCase
+	fanout         domain.TimelineFanout
 	backfillLimit  int
 	activityTTL    time.Duration
 }
 
 func NewBackfillTimelineUseCase(
 	userTweetsRepo domain.UserTweetsRepository,
-	appendUC *AppendTweetToTimelineUseCase,
+	fanout domain.TimelineFanout,
 	backfillLimit int,
 	activityTTL time.Duration,
 ) *BackfillTimelineUseCase {
 	return &BackfillTimelineUseCase{
 		userTweetsRepo: userTweetsRepo,
-		appendUC:       appendUC,
+		fanout:         fanout,
 		backfillLimit:  backfillLimit,
 		activityTTL:    activityTTL,
 	}
@@ -35,10 +36,12 @@ func (uc *BackfillTimelineUseCase) Execute(ctx context.Context, followerID, foll
 	if err != nil {
 		return err
 	}
+
 	for _, tweet := range tweets {
-		if err := uc.appendUC.Execute(ctx, followerID, tweet, uc.activityTTL); err != nil {
+		if err := uc.fanout.AppendTweet(ctx, followerID, tweet, uc.activityTTL); err != nil {
 			slog.ErrorContext(ctx, "backfill: append tweet", "follower_id", followerID, "tweet_id", tweet.ID, "err", err)
 		}
 	}
+
 	return nil
 }
