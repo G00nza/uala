@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,11 +32,13 @@ func (m *mockTweetRepo) Create(ctx context.Context, t *domain.Tweet) error {
 }
 
 type mockFollowRepo struct {
-	existsResult    bool
-	existsErr       error
-	createErr       error
-	followers       []uuid.UUID
-	getFollowersErr error
+	existsResult       bool
+	existsErr          error
+	createErr          error
+	followers          []uuid.UUID
+	getFollowersErr    error
+	activeFollowers    []domain.FollowerActivity
+	activeFollowersErr error
 }
 
 func (m *mockFollowRepo) Create(ctx context.Context, f *domain.Follow) error {
@@ -51,7 +54,7 @@ func (m *mockFollowRepo) GetFollowers(ctx context.Context, followeeID uuid.UUID)
 }
 
 func (m *mockFollowRepo) GetActiveFollowers(_ context.Context, _ uuid.UUID, _ time.Time) ([]domain.FollowerActivity, error) {
-	return nil, nil
+	return m.activeFollowers, m.activeFollowersErr
 }
 
 type mockTimelineRepo struct {
@@ -91,4 +94,51 @@ type mockUserActivityPublisher struct {
 func (m *mockUserActivityPublisher) PublishUserActivity(ctx context.Context, evt domain.UserActivityEvent) error {
 	m.calls = append(m.calls, evt)
 	return m.publishErr
+}
+
+// --- TimelineFanout mock ---
+
+type mockTimelineFanoutCall struct {
+	userID uuid.UUID
+	item   domain.TweetItem
+	ttl    time.Duration
+}
+
+type mockTimelineFanout struct {
+	mu    sync.Mutex
+	calls []mockTimelineFanoutCall
+	err   error
+}
+
+func (m *mockTimelineFanout) AppendTweet(_ context.Context, userID uuid.UUID, item domain.TweetItem, ttl time.Duration) error {
+	m.mu.Lock()
+	m.calls = append(m.calls, mockTimelineFanoutCall{userID: userID, item: item, ttl: ttl})
+	m.mu.Unlock()
+	return m.err
+}
+
+// --- FanoutRetryPublisher mock ---
+
+type mockFanoutRetryPublisher struct {
+	mu     sync.Mutex
+	events []domain.FanoutRetryEvent
+	err    error
+}
+
+func (m *mockFanoutRetryPublisher) PublishFanoutRetry(_ context.Context, evt domain.FanoutRetryEvent) error {
+	m.mu.Lock()
+	m.events = append(m.events, evt)
+	m.mu.Unlock()
+	return m.err
+}
+
+// --- UserTweetsRepository mock ---
+
+type mockUserTweetsRepo struct {
+	tweets []domain.TweetItem
+	err    error
+}
+
+func (m *mockUserTweetsRepo) GetLatestByUser(_ context.Context, _ uuid.UUID, _ int) ([]domain.TweetItem, error) {
+	return m.tweets, m.err
 }
