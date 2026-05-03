@@ -23,15 +23,15 @@
       "options": { "legend": { "calcs": ["p50", "p95", "p99"], "displayMode": "table", "placement": "bottom" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{path!=\"/metrics\"}[5m])) by (le, path))",
           "legendFormat": "p50 {{path}}"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{path!=\"/metrics\"}[5m])) by (le, path))",
           "legendFormat": "p95 {{path}}"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{path!=\"/metrics\"}[5m])) by (le, path))",
           "legendFormat": "p99 {{path}}"
         }
       ],
@@ -45,7 +45,7 @@
       "id": 2,
       "targets": [
         {
-          "expr": "sum by (path, status) (rate(http_requests_total[5m]))",
+          "expr": "sum by (path, status) (rate(http_requests_total{path!=\"/metrics\"}[5m]))",
           "legendFormat": "{{path}} {{status}}"
         }
       ],
