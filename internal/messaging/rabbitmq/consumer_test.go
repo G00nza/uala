@@ -237,6 +237,50 @@ func (f *trackingFanout) AppendTweet(_ context.Context, _ uuid.UUID, _ domain.Tw
 	return nil
 }
 
+// recordingFanout records every userID passed to AppendTweet.
+type recordingFanout struct {
+	mu         sync.Mutex
+	recipients []uuid.UUID
+}
+
+func (r *recordingFanout) AppendTweet(_ context.Context, userID uuid.UUID, _ domain.TweetItem, _ time.Duration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recipients = append(r.recipients, userID)
+	return nil
+}
+
+func TestHandleTweetCreated_AuthorReceivesOwnTweet(t *testing.T) {
+	authorID := uuid.New()
+
+	recorded := &recordingFanout{}
+	c := &Consumer{
+		followRepo:    &stubFollowRepo{followers: []uuid.UUID{}},
+		fanout:        recorded,
+		fanoutWorkers: fanoutConcurrency,
+		activityTTL:   24 * time.Hour,
+	}
+
+	evt := domain.TweetCreatedEvent{
+		TweetID:   uuid.New(),
+		UserID:    authorID,
+		Username:  "author",
+		Content:   "my tweet",
+		CreatedAt: time.Now(),
+	}
+	body, _ := json.Marshal(evt)
+	c.handleTweetCreated(context.Background(), amqp.Delivery{Body: body})
+
+	recorded.mu.Lock()
+	defer recorded.mu.Unlock()
+	if len(recorded.recipients) != 1 {
+		t.Fatalf("want 1 AppendTweet call (the author), got %d", len(recorded.recipients))
+	}
+	if recorded.recipients[0] != authorID {
+		t.Errorf("want authorID %s in fanout, got %s", authorID, recorded.recipients[0])
+	}
+}
+
 func makeDelivery(body []byte, xDeathCount int64) amqp.Delivery {
 	headers := amqp.Table{}
 	if xDeathCount > 0 {

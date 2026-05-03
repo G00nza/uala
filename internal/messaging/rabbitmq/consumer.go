@@ -170,6 +170,9 @@ func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
 		return
 	}
 
+	// Include the author so their own tweet appears in their own timeline.
+	followers = append([]domain.FollowerActivity{{ID: evt.UserID, LastActive: time.Now()}}, followers...)
+
 	if err := c.fanoutTweet(ctx, evt, followers); err != nil {
 		slog.ErrorContext(ctx, "rabbitmq: all fanout writes failed", "tweet_id", evt.TweetID, "err", err)
 		metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetCreated).Inc()

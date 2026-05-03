@@ -122,6 +122,76 @@ func TestTimelineRepository_GetTimeline_AfterCursor(t *testing.T) {
 	}
 }
 
+func TestTimelineRepository_GetTimeline_IncludesOwnTweets(t *testing.T) {
+	r := setup(t)
+
+	alice := &domain.User{ID: uuid.New(), Username: "alice_own", CreatedAt: time.Now().UTC()}
+	_ = r.user.Create(context.Background(), alice)
+
+	_ = r.tweet.Create(context.Background(), &domain.Tweet{
+		ID: uuid.New(), UserID: alice.ID, Content: "my own tweet", CreatedAt: time.Now().UTC(),
+	})
+
+	items, err := r.timeline.GetTimeline(context.Background(), domain.TimelineQuery{UserID: alice.ID, Limit: 20})
+	if err != nil {
+		t.Fatalf("GetTimeline: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item (own tweet), got %d", len(items))
+	}
+	if items[0].Content != "my own tweet" {
+		t.Fatalf("want 'my own tweet', got %s", items[0].Content)
+	}
+}
+
+func TestTimelineRepository_GetTimeline_AfterCursor_IncludesOwnTweets(t *testing.T) {
+	r := setup(t)
+
+	alice := &domain.User{ID: uuid.New(), Username: "alice_own_after", CreatedAt: time.Now().UTC()}
+	_ = r.user.Create(context.Background(), alice)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	t1ID := uuid.New()
+	t2ID := uuid.New()
+	_ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t1ID, UserID: alice.ID, Content: "own1", CreatedAt: base.Add(-1 * time.Minute)})
+	_ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t2ID, UserID: alice.ID, Content: "own2", CreatedAt: base})
+
+	// after=t2ID → tweets older than own2 → [own1]
+	items, err := r.timeline.GetTimeline(context.Background(), domain.TimelineQuery{
+		UserID: alice.ID, After: &t2ID, Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("GetTimeline after: %v", err)
+	}
+	if len(items) != 1 || items[0].Content != "own1" {
+		t.Fatalf("want [own1], got %v", items)
+	}
+}
+
+func TestTimelineRepository_GetTimeline_BeforeCursor_IncludesOwnTweets(t *testing.T) {
+	r := setup(t)
+
+	alice := &domain.User{ID: uuid.New(), Username: "alice_own_before", CreatedAt: time.Now().UTC()}
+	_ = r.user.Create(context.Background(), alice)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	t1ID := uuid.New()
+	t2ID := uuid.New()
+	_ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t1ID, UserID: alice.ID, Content: "own1", CreatedAt: base.Add(-1 * time.Minute)})
+	_ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t2ID, UserID: alice.ID, Content: "own2", CreatedAt: base})
+
+	// before=t1ID → tweets newer than own1 → [own2]
+	items, err := r.timeline.GetTimeline(context.Background(), domain.TimelineQuery{
+		UserID: alice.ID, Before: &t1ID, Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("GetTimeline before: %v", err)
+	}
+	if len(items) != 1 || items[0].Content != "own2" {
+		t.Fatalf("want [own2], got %v", items)
+	}
+}
+
 func TestTimelineRepository_GetTimeline_BeforeCursor(t *testing.T) {
 	r := setup(t)
 
