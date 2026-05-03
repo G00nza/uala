@@ -115,3 +115,19 @@ make test
 INTEGRATION=1 go test ./...
 ```
 
+---
+
+## Proceso de desarrollo con IA
+
+Este proyecto fue desarrollado usando [Claude Code](https://claude.ai/code) como multiplicador de productividad. El registro completo del proceso está en [`docs/superpowers/`](docs/superpowers/):
+
+| Directorio | Contenido |
+|---|---|
+| [`plans/`](docs/superpowers/plans/) | Plan de implementación de cada iteración, acordado con la IA antes de escribir código |
+| [`specs/`](docs/superpowers/specs/) | Diseños técnicos detallados: trade-offs, alternativas descartadas, decisiones arquitectónicas |
+| [`gaps.md`](docs/superpowers/gaps.md) | Análisis de gaps de performance identificados post-implementación (índices faltantes, unbounded Redis sets, subqueries vs JOINs) |
+| [`load_tests/`](docs/superpowers/load_tests/) | Resultados de pruebas de carga y estado de la base de datos al momento del test |
+| [`sessions/`](docs/superpowers/sessions/) | Transcripciones de las sesiones de trabajo con la IA |
+
+El flujo de trabajo en cada iteración fue: spec → plan → implementación → revisión. Las decisiones arquitectónicas (fanout asíncrono, celebrity problem, paginación por cursor, DLQ con retry) están justificadas en los docs de specs y en [`docs/Decisiones-de-diseño.md`](docs/Decisiones-de-diseño.md).
+
