@@ -183,6 +183,10 @@ func (r *TimelineRepository) AppendTweet(ctx context.Context, userID uuid.UUID, 
 	}).Err(); err != nil {
 		return err
 	}
+	// Trim to limit so the sorted set stays bounded under active fanout.
+	if err := r.rdb.ZRemRangeByRank(ctx, key, 0, -(r.limit + 1)).Err(); err != nil {
+		return err
+	}
 	if err := r.rdb.HSetNX(ctx, dataKey, id, string(data)).Err(); err != nil {
 		return err
 	}

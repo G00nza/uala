@@ -426,6 +426,41 @@ func TestRedisTimeline_CursorNotInRedis_FallsBackToPostgres(t *testing.T) {
 	}
 }
 
+func TestRedisTimeline_AppendTweet_TrimsToLimit(t *testing.T) {
+	flushRedis(t)
+	userID := uuid.New()
+	limit := 3
+	repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTimeline{}, limit)
+
+	base := time.Now().UTC()
+	var ids []uuid.UUID
+	for i := 0; i < limit+2; i++ {
+		item := domain.TweetItem{
+			ID:        uuid.New(),
+			UserID:    uuid.New(),
+			Username:  "alice",
+			Content:   fmt.Sprintf("tweet%d", i),
+			CreatedAt: base.Add(time.Duration(i) * time.Second).Truncate(time.Second),
+		}
+		ids = append(ids, item.ID)
+		if err := repo.AppendTweet(context.Background(), userID, item, 0); err != nil {
+			t.Fatalf("AppendTweet: %v", err)
+		}
+	}
+
+	key := "timeline:" + userID.String()
+	if n := testRDB.ZCard(context.Background(), key).Val(); n != int64(limit) {
+		t.Errorf("ZCard: want %d (limit), got %d", limit, n)
+	}
+	// Oldest tweets (ids[0] and ids[1]) should have been evicted.
+	for _, evicted := range ids[:2] {
+		score, err := testRDB.ZScore(context.Background(), key, evicted.String()).Result()
+		if err == nil {
+			t.Errorf("expected evicted tweet %s to be absent, got score %v", evicted, score)
+		}
+	}
+}
+
 func TestRedisTimeline_FirstPage_ReturnsLimit(t *testing.T) {
 	flushRedis(t)
 	userID := uuid.New()

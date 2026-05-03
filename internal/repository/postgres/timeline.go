@@ -63,7 +63,8 @@ func (r *TimelineRepository) getTimelineAfter(ctx context.Context, q domain.Time
 		SELECT t.id, t.user_id, u.username, t.content, t.created_at
 		FROM tweets t
 		JOIN users u ON u.id = t.user_id
-		WHERE (t.user_id = $1 OR t.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1))
+		LEFT JOIN follows f ON f.followee_id = t.user_id AND f.follower_id = $1
+		WHERE (t.user_id = $1 OR f.followee_id IS NOT NULL)
 		  AND t.created_at < (SELECT created_at FROM tweets WHERE id = $2)
 		ORDER BY t.created_at DESC
 		LIMIT $3
@@ -80,7 +81,8 @@ func (r *TimelineRepository) getTimelineBefore(ctx context.Context, q domain.Tim
 		SELECT t.id, t.user_id, u.username, t.content, t.created_at
 		FROM tweets t
 		JOIN users u ON u.id = t.user_id
-		WHERE (t.user_id = $1 OR t.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1))
+		LEFT JOIN follows f ON f.followee_id = t.user_id AND f.follower_id = $1
+		WHERE (t.user_id = $1 OR f.followee_id IS NOT NULL)
 		  AND t.created_at > (SELECT created_at FROM tweets WHERE id = $2)
 		ORDER BY t.created_at ASC
 		LIMIT $3
@@ -102,8 +104,8 @@ func (r *TimelineRepository) getTimelineFirst(ctx context.Context, q domain.Time
 		SELECT t.id, t.user_id, u.username, t.content, t.created_at
 		FROM tweets t
 		JOIN users u ON u.id = t.user_id
-		WHERE t.user_id = $1
-		   OR t.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1)
+		LEFT JOIN follows f ON f.followee_id = t.user_id AND f.follower_id = $1
+		WHERE t.user_id = $1 OR f.followee_id IS NOT NULL
 		ORDER BY t.created_at DESC
 		LIMIT $2
 	`, q.UserID, q.Limit)

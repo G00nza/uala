@@ -5,8 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"uala/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 type mockUserRepo struct {
@@ -47,10 +48,6 @@ func (m *mockFollowRepo) Create(ctx context.Context, f *domain.Follow) error {
 
 func (m *mockFollowRepo) Exists(ctx context.Context, followerID, followeeID uuid.UUID) (bool, error) {
 	return m.existsResult, m.existsErr
-}
-
-func (m *mockFollowRepo) GetFollowers(ctx context.Context, followeeID uuid.UUID) ([]uuid.UUID, error) {
-	return m.followers, m.getFollowersErr
 }
 
 func (m *mockFollowRepo) GetActiveFollowers(_ context.Context, _ uuid.UUID, _ time.Time) ([]domain.FollowerActivity, error) {
