@@ -1,0 +1,242 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ analiza este proyecto, dime que gaps de conocimiento tiene el candidato, usa  
+  @Consignas.md como guita del enunciado dado                                   
+  ⎿  Read Consignas.md (65 lines)
+
+⏺ Explore(Explore project structure and implementation)
+  ⎿  Done (71 tool uses · 64.4k tokens · 2m 7s)
+  (ctrl+o to expand)
+
+⏺ Tengo una imagen completa del proyecto. Aquí está el análisis de gaps del
+  candidato:
+
+  ---
+  Análisis de Gaps — Desafío Ualá
+
+  Lo que está bien hecho
+
+  El proyecto está sólido en muchos aspectos: clean architecture correcta con
+  dependencias solo hacia adentro, Redis sorted set para timeline optimizado
+  para lectura, RabbitMQ para fanout asíncrono, manejo correcto de Unicode en
+  tweets (utf8.RuneCountInString), tests unitarios y de integración separados,
+  OpenAPI spec, ADRs, métricas Prometheus/Grafana, y Docker Compose completo.
+
+  ---
+  Gaps Detectados
+
+  1. Producción Go — Graceful Shutdown (Gap crítico)
+
+  main.go usa http.ListenAndServe sin manejo de señales SIGTERM/SIGINT. Los
+  goroutines consumidores de RabbitMQ reciben un context.Background() que nunca
+  cancela. En producción, un deploy/restart mataría conexiones y mensajes en
+  vuelo sin vaciado del buffer.
+
+  Lo esperado: signal.NotifyContext, shutdown del servidor con timeout, y
+  cancelación del contexto propagada a consumidores.
+
+  ---
+  2. Bug en tests — Constructor con aridad incorrecta (Gap de atención al 
+  detalle)
+
+  En handler/integration_test.go (o setup_test.go) hay una llamada:
+  redisrepo.NewTimelineRepository(testRDB, pgTimeline)  // 2 args
+  Pero el constructor real requiere 3 argumentos (incluye limit int). Los tests
+  de integración no compilan tal como están.
+
+  ---
+  3. Publish errors silenciosos sin logging (Gap de observabilidad)
+
+  _ = uc.publisher.PublishTweetCreated(ctx, event)
+  La pérdida del evento ni siquiera se loggea. Hay métricas de
+  rabbitmq_messages_failed_total en el consumer pero no en el publisher. Un
+  fallo de conexión a RabbitMQ al publicar es invisible salvo por síntomas
+  downstream.
+
+  ---
+  4. No hay lógica de reconexión en el consumer (Gap de resiliencia)
+
+  Si la conexión AMQP cae, el consumidor muere sin reintentar. No hay Dead
+  Letter Queue (DLQ) configurada, y el Nack(..., requeue=true) puede crear un
+  loop infinito si el mensaje siempre falla.
+
+  Lo esperado para producción: DLQ, backoff exponencial en reconexión, y un
+  límite de reintentos por mensaje.
+
+  ---
+  5. Fanout no escala a millones de seguidores (Gap de diseño para escala)
+
+  El consumer de tweet.created hace un GetFollowers y luego escribe a Redis
+  secuencialmente para cada seguidor. Para un usuario con 1M seguidores, esto
+  bloquea el único goroutine consumidor durante minutos.
+
+  El enunciado pide explícitamente escalar a millones de usuarios. Lo esperado:
+  fanout concurrente con errgroup/semáforo, o un modelo híbrido push/pull
+  (fanout solo para usuarios activos, pull para celebrities).
+
+  ---
+  6. Sin paginación en timeline (Gap funcional)
+
+  GET /timeline devuelve hasta 500 tweets en una sola respuesta. No hay
+  cursor-based pagination ni limit/offset en la API. El OpenAPI spec menciona
+  paginación como "backlog" pero no está implementada.
+
+  ---
+  7. Migraciones inline en startup (Gap de madurez en DB management)
+
+  Migrate() ejecuta CREATE TABLE IF NOT EXISTS directamente en el arranque del
+  servidor. No usa herramientas estándar como golang-migrate, goose o atlas.
+
+  El riesgo: cambios de schema en producción sin versionado ni rollback
+  capability.
+
+  ---
+  8. No hay validación de existencia del usuario en el contexto (Gap de 
+  seguridad básica)
+
+  parseUserID lee el header X-User-ID como UUID pero no verifica que el usuario
+  exista en ningún endpoint autenticado (solo CreateTweet y Follow lo verifican
+  via repositorio). Un UUID válido pero inexistente puede comportarse de forma
+  inconsistente.
+
+  ---
+  9. Use cases sin interfaz propia (Gap de diseño — debatible)
+
+  El ADR-001 justifica esto con "private interfaces en handlers como testing
+  seam", pero esto impide mockear use cases entre sí si alguna vez un use case
+  necesita llamar a otro, y complica la transición a arquitecturas como gRPC
+  donde las interfaces de servicio son el contrato. Es una decisión válida
+  documentada, pero muestra desconocimiento del trade-off completo.
+
+  ---
+  Resumen Priorizado
+
+  ┌───────────┬───────────────────────────────────────────┐
+  │ Severidad │                    Gap                    │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🔴 Alta   │ Fanout no escala (core del enunciado)     │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🔴 Alta   │ Bug en tests de integración (no compilan) │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🟠 Media  │ Sin graceful shutdown                     │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🟠 Media  │ Sin reconexión AMQP / DLQ                 │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🟠 Media  │ Publish errors sin logging                │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🟡 Baja   │ Sin paginación                            │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🟡 Baja   │ Migraciones inline                        │
+  ├───────────┼───────────────────────────────────────────┤
+  │ 🟡 Baja   │ Validación de usuario en contexto         │
+  └───────────┴───────────────────────────────────────────┘
+
+  ---
+  El candidato tiene un conocimiento sólido de arquitectura limpia en Go, diseño
+   de sistemas de lectura optimizada y observabilidad. Los gaps más relevantes
+  están en resiliencia de sistemas distribuidos (reconexión, DLQ, backoff) y en
+  el diseño de fanout a escala que es el núcleo del desafío.
+
+✻ Sautéed for 2m 51s
+
+❯ anota todos los gaps en un fichero                                            
+
+⏺ Write(docs/gaps.md)
+  ⎿  Wrote 86 lines to docs/gaps.md
+       2 # Gaps de conocimiento detectados
+       3 ## Seniority estimado: Senior Mid / Senior temprano (3-5 años)
+       4 
+       5 ---
+       6 
+       7 ## Gaps críticos
+       8 
+       9 ### 1. Fanout no escala a millones de seguidores
+      10 El consumer de `tweet.created` hace un `GetFollowers` y escribe 
+         a Redis secuencialmente para cada seguidor.
+     … +100 lines (ctrl+o to expand)
+
+⏺ Guardado en /Users/gonza/Katas/uala/docs/gaps.md con los 9 gaps organizados
+  por severidad.
+
+❯ /context                                                                      
+  ⎿  Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛁ ⛁ ⛁   Sonnet 4.6
+     ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   claude-sonnet-4-6
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   27.9k/200k tokens (14%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 6.4k tokens (3.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 7k tokens (3.5%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 247 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Skills: 2k tokens (1.0%)
+     ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Messages: 12.6k tokens (6.3%)
+                           ⛶ Free space: 138.8k (69.4%)
+                           ⛝ Autocompact buffer: 33k tokens (16.5%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__create_draft
+     ├ mcp__claude_ai_Gmail__create_label
+     ├ mcp__claude_ai_Gmail__get_thread
+     ├ mcp__claude_ai_Gmail__label_message
+     ├ mcp__claude_ai_Gmail__label_thread
+     ├ mcp__claude_ai_Gmail__list_drafts
+     ├ mcp__claude_ai_Gmail__list_labels
+     ├ mcp__claude_ai_Gmail__search_threads
+     ├ mcp__claude_ai_Gmail__unlabel_message
+     ├ mcp__claude_ai_Gmail__unlabel_thread
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     └ mcp__claude_ai_Google_Drive__complete_authentication
+
+     Custom agents · /agents
+
+     Plugin
+     └ superpowers:code-reviewer: 247 tokens
+
+     Skills · /skills
+
+     User
+     ├ golang: 49 tokens
+     ├ golang:architecture: 14 tokens
+     ├ golang:dependency-injection: 12 tokens
+     ├ golang:repository-layer: 10 tokens
+     ├ golang:handler-layer: 10 tokens
+     ├ golang:modules-tooling: 10 tokens
+     ├ golang:logging: 10 tokens
+     ├ golang:usecase-layer: 9 tokens
+     ├ golang:project-layout: 9 tokens
+     ├ golang:error-handling: 9 tokens
+     ├ golang:domain-layer: 8 tokens
+     ├ golang:performance: 8 tokens
+     ├ golang:concurrency: 8 tokens
+     ├ golang:interfaces: 7 tokens
+     ├ golang:context: 6 tokens
+     ├ golang:testing: 6 tokens
+     ├ golang:security: 6 tokens
+     └ golang:naming: 5 tokens
+
+     Plugin
+     ├ backend-best-practices: 204 tokens
+     ├ receiving-code-review: 67 tokens
+     ├ verification-before-completion: 67 tokens
+     ├ finishing-a-development-branch: 61 tokens
+     ├ using-git-worktrees: 59 tokens
+     ├ brainstorming: 56 tokens
+     ├ using-superpowers: 47 tokens
+     ├ dispatching-parallel-agents: 37 tokens
+     ├ requesting-code-review: 36 tokens
+     ├ executing-plans: 33 tokens
+     ├ writing-skills: 31 tokens
+     ├ subagent-driven-development: 31 tokens
+     ├ systematic-debugging: 31 tokens
+     ├ test-driven-development: 29 tokens
+     ├ writing-plans: 28 tokens
+     ├ superpowers:execute-plan: 22 tokens
+     ├ superpowers:brainstorm: 21 tokens
+     └ superpowers:write-plan: 21 tokens

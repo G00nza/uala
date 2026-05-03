@@ -1,0 +1,724 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ implementa iter 3
+
+⏺ Skill(superpowers:using-superpowers)
+  ⎿  Successfully loaded skill
+
+⏺ Checking memory and project context before proceeding.
+
+  Read 2 files, listed 3 directories, recalled 1 memory (ctrl+o to expand)
+
+⏺ Using the superpowers:executing-plans skill to execute this iteration plan.
+
+⏺ Skill(superpowers:executing-plans)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the executing-plans skill to implement this plan.
+
+  Let me first explore the current codebase to understand what's already in
+  place.
+
+  Searched for 1 pattern, read 14 files (ctrl+o to expand)
+
+⏺ Now I have a clear picture. Let me create tasks and implement iter 3.
+⏺ Now executing task 1 — adding RabbitMQ to docker-compose.
+
+⏺ Update(docker-compose.yml)
+  ⎿  Added 12 lines
+      28        timeout: 5s
+      29        retries: 5
+      30  
+      31 +  rabbitmq:                                                    
+      32 +    image: rabbitmq:3-management-alpine                        
+      33 +    container_name: uala_rabbitmq                              
+      34 +    ports:                                                     
+      35 +      - "5672:5672"                                            
+      36 +      - "15672:15672"                                          
+      37 +    healthcheck:                                               
+      38 +      test: ["CMD", "rabbitmq-diagnostics", "ping"]            
+      39 +      interval: 10s                                            
+      40 +      timeout: 5s                                              
+      41 +      retries: 5                                               
+      42 +                                                               
+      43  volumes:
+      44    postgres_data:
+
+⏺ Bash(go get github.com/rabbitmq/amqp091-go)
+  ⎿  go: downloading github.com/rabbitmq/amqp091-go v1.11.0
+     go: added github.com/rabbitmq/amqp091-go v1.11.0
+
+⏺ Write(internal/domain/events.go)
+  ⎿  Wrote 33 lines to internal/domain/events.go
+       1 package domain
+       2 
+       3 import (
+       4        "context"
+       5        "time"
+       6 
+       7        "github.com/google/uuid"
+       8 )
+       9 
+      10 type TweetCreatedEvent struct {
+     … +26 lines (ctrl+o to expand)
+
+⏺ Update(internal/repository/postgres/timeline.go)
+  ⎿  Added 28 lines
+      16    return &TimelineRepository{db: db}
+      17  }
+      18  
+      19 +func (r *TimelineRepository) GetLatestByUser(ctx context.Contex
+         +t, userID uuid.UUID, limit int) ([]domain.TweetItem, error) {  
+      20 +  rows, err := r.db.Query(ctx, `                               
+      21 +    SELECT t.id, t.user_id, u.username, t.content, t.created_at
+      22 +    FROM tweets t                                              
+      23 +    JOIN users u ON u.id = t.user_id                           
+      24 +    WHERE t.user_id = $1                                       
+      25 +    ORDER BY t.created_at DESC                                 
+      26 +    LIMIT $2                                                   
+      27 +  `, userID, limit)                                            
+      28 +  if err != nil {                                              
+      29 +    return nil, err                                            
+      30 +  }                                                            
+      31 +  defer rows.Close()                                           
+      32 +                                                               
+      33 +  var items []domain.TweetItem                                 
+      34 +  for rows.Next() {                                            
+      35 +    var item domain.TweetItem                                  
+      36 +    if err := rows.Scan(&item.ID, &item.UserID, &item.Username,
+         + &item.Content, &item.CreatedAt); err != nil {                 
+      37 +      return nil, err                                          
+      38 +    }                                                          
+      39 +    items = append(items, item)                                
+      40 +  }                                                            
+      41 +  if items == nil {                                            
+      42 +    items = []domain.TweetItem{}                               
+      43 +  }                                                            
+      44 +  return items, rows.Err()                                     
+      45 +}                                                              
+      46 +                                                               
+      47  func (r *TimelineRepository) GetTimeline(ctx context.Context, u
+          serID uuid.UUID) ([]domain.TweetItem, error) {
+      48    rows, err := r.db.Query(ctx, `
+      49      SELECT t.id, t.user_id, u.username, t.content, t.created_at
+
+⏺ Write(internal/messaging/rabbitmq/client.go)
+  ⎿  Wrote 33 lines to internal/messaging/rabbitmq/client.go
+       1 package rabbitmq
+       2 
+       3 import (
+       4        amqp "github.com/rabbitmq/amqp091-go"
+       5 )
+       6 
+       7 const (
+       8        QueueTweetCreated  = "tweet.created"
+       9        QueueFollowCreated = "follow.created"
+      10 )
+     … +24 lines (ctrl+o to expand)
+
+⏺ Write(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Wrote 44 lines to internal/messaging/rabbitmq/publisher.go
+      1 package rabbitmq
+      2 
+      3 import (
+      4         "context"
+      5         "encoding/json"
+      6 
+      7         amqp "github.com/rabbitmq/amqp091-go"
+      8         "uala/internal/domain"
+      9 )
+     … +36 lines (ctrl+o to expand)
+
+⏺ Write(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Wrote 144 lines to internal/messaging/rabbitmq/consumer.go
+       1 package rabbitmq
+       2 
+       3 import (
+       4        "context"
+       5        "encoding/json"
+       6        "log"
+       7 
+       8        amqp "github.com/rabbitmq/amqp091-go"
+       9        "uala/internal/domain"
+      10 )
+     … +141 lines (ctrl+o to expand)
+⏺ Write(internal/usecase/tweet.go)
+  ⎿  Added 14 lines, removed 22 lines
+      10  )
+      11  
+      12  type TweetUseCase struct {
+      13 -  userRepo   domain.UserRepository                             
+      14 -  tweetRepo  domain.TweetRepository                            
+      15 -  followRepo domain.FollowRepository                           
+      16 -  fanout     domain.TimelineFanout                             
+      13 +  userRepo  domain.UserRepository                              
+      14 +  tweetRepo domain.TweetRepository                             
+      15 +  publisher domain.TweetEventPublisher                         
+      16  }
+      17  
+      18  func NewTweetUseCase(
+      19    userRepo domain.UserRepository,
+      20    tweetRepo domain.TweetRepository,
+      22 -  followRepo domain.FollowRepository,                          
+      23 -  fanout domain.TimelineFanout,                                
+      21 +  publisher domain.TweetEventPublisher,                        
+      22  ) *TweetUseCase {
+      23    return &TweetUseCase{
+      26 -    userRepo:   userRepo,                                      
+      27 -    tweetRepo:  tweetRepo,                                     
+      28 -    followRepo: followRepo,                                    
+      29 -    fanout:     fanout,                                        
+      24 +    userRepo:  userRepo,                                       
+      25 +    tweetRepo: tweetRepo,                                      
+      26 +    publisher: publisher,                                      
+      27    }
+      28  }
+      29  
+     ...
+      47    if err := uc.tweetRepo.Create(ctx, t); err != nil {
+      48      return nil, err
+      49    }
+      53 -  followers, err := uc.followRepo.GetFollowers(ctx, userID)    
+      54 -  if err == nil && len(followers) > 0 {                        
+      55 -    item := domain.TweetItem{                                  
+      56 -      ID:        t.ID,                                         
+      57 -      UserID:    t.UserID,                                     
+      58 -      Username:  user.Username,                                
+      59 -      Content:   t.Content,                                    
+      60 -      CreatedAt: t.CreatedAt,                                  
+      61 -    }                                                          
+      62 -    for _, followerID := range followers {                     
+      63 -      _ = uc.fanout.AppendTweet(ctx, followerID, item)         
+      64 -    }                                                          
+      50 +  evt := domain.TweetCreatedEvent{                             
+      51 +    TweetID:   t.ID,                                           
+      52 +    UserID:    t.UserID,                                       
+      53 +    Username:  user.Username,                                  
+      54 +    Content:   t.Content,                                      
+      55 +    CreatedAt: t.CreatedAt,                                    
+      56    }
+      57 +  _ = uc.publisher.PublishTweetCreated(ctx, evt)               
+      58    return t, nil
+      59  }
+
+⏺ Write(internal/usecase/follow.go)
+  ⎿  Added 12 lines, removed 3 lines
+      11  type FollowUseCase struct {
+      12    userRepo   domain.UserRepository
+      13    followRepo domain.FollowRepository
+      14 +  publisher  domain.FollowEventPublisher                       
+      15  }
+      16  
+      16 -func NewFollowUseCase(userRepo domain.UserRepository, followRep
+         -o domain.FollowRepository) *FollowUseCase {                    
+      17 -  return &FollowUseCase{userRepo: userRepo, followRepo: followR
+         -epo}                                                           
+      17 +func NewFollowUseCase(userRepo domain.UserRepository, followRep
+         +o domain.FollowRepository, publisher domain.FollowEventPublishe
+         +r) *FollowUseCase {                                            
+      18 +  return &FollowUseCase{userRepo: userRepo, followRepo: followR
+         +epo, publisher: publisher}                                     
+      19  }
+      20  
+      21  func (uc *FollowUseCase) Follow(ctx context.Context, followerID
+          , followeeID uuid.UUID) error {
+     ...
+      37      FolloweeID: followeeID,
+      38      CreatedAt:  time.Now().UTC(),
+      39    }
+      39 -  return uc.followRepo.Create(ctx, f)                          
+      40 +  if err := uc.followRepo.Create(ctx, f); err != nil {         
+      41 +    return err                                                 
+      42 +  }                                                            
+      43 +  evt := domain.FollowCreatedEvent{                            
+      44 +    FollowerID: followerID,                                    
+      45 +    FolloweeID: followeeID,                                    
+      46 +  }                                                            
+      47 +  _ = uc.publisher.PublishFollowCreated(ctx, evt)              
+      48 +  return nil                                                   
+      49  }
+
+⏺ Write(internal/infra/config.go)
+  ⎿  Added 23 lines, removed 7 lines
+       1  package infra
+       2  
+       3 -import "os"                                                    
+       3 +import (                                                       
+       4 +  "os"                                                         
+       5 +  "strconv"                                                    
+       6 +)                                                              
+       7  
+       8  type Config struct {
+       6 -  DatabaseURL string                                           
+       7 -  RedisURL    string                                           
+       8 -  Port        string                                           
+       9 +  DatabaseURL        string                                    
+      10 +  RedisURL           string                                    
+      11 +  AMQPURL            string                                    
+      12 +  Port               string                                    
+      13 +  FollowBackfillLimit int                                      
+      14  }
+      15  
+      16  func LoadConfig() Config {
+      17    return Config{
+      13 -    DatabaseURL: getenv("DATABASE_URL", "postgres://uala:uala@l
+         -ocalhost:5432/uala"),                                          
+      14 -    RedisURL:    getenv("REDIS_URL", "redis://localhost:6379/0"
+         -),                                                             
+      15 -    Port:        getenv("PORT", "8080"),                       
+      18 +    DatabaseURL:        getenv("DATABASE_URL", "postgres://uala
+         +:uala@localhost:5432/uala"),                                   
+      19 +    RedisURL:           getenv("REDIS_URL", "redis://localhost:
+         +6379/0"),                                                      
+      20 +    AMQPURL:            getenv("AMQP_URL", "amqp://guest:guest@
+         +localhost:5672/"),                                             
+      21 +    Port:               getenv("PORT", "8080"),                
+      22 +    FollowBackfillLimit: getenvInt("FOLLOW_BACKFILL_LIMIT", 20)
+         +,                                                              
+      23    }
+      24  }
+      25  
+     ...
+      29    }
+      30    return fallback
+      31  }
+      32 +                                                               
+      33 +func getenvInt(key string, fallback int) int {                 
+      34 +  if v := os.Getenv(key); v != "" {                            
+      35 +    if n, err := strconv.Atoi(v); err == nil {                 
+      36 +      return n                                                 
+      37 +    }                                                          
+      38 +  }                                                            
+      39 +  return fallback                                              
+      40 +}                                                              
+
+⏺ Write(cmd/api/main.go)
+  ⎿  Added 15 lines, removed 2 lines
+       7  
+       8    "uala/internal/handler"
+       9    "uala/internal/infra"
+      10 +  "uala/internal/messaging/rabbitmq"                           
+      11    "uala/internal/repository/postgres"
+      12    redisrepo "uala/internal/repository/redis"
+      13    "uala/internal/usecase"
+     ...
+      33    }
+      34    defer rdb.Close()
+      35  
+      36 +  amqpConn, err := rabbitmq.Connect(cfg.AMQPURL)               
+      37 +  if err != nil {                                              
+      38 +    log.Fatal("rabbitmq connect:", err)                        
+      39 +  }                                                            
+      40 +  defer amqpConn.Close()                                       
+      41 +                                                               
+      42    userRepo := postgres.NewUserRepository(db)
+      43    tweetRepo := postgres.NewTweetRepository(db)
+      44    followRepo := postgres.NewFollowRepository(db)
+     ...
+      46  
+      47    redisTimeline := redisrepo.NewTimelineRepository(rdb, pgTimel
+          ineRepo)
+      48  
+      49 +  publisher := rabbitmq.NewPublisher(amqpConn)                 
+      50 +                                                               
+      51 +  consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisT
+         +imeline, pgTimelineRepo, cfg.FollowBackfillLimit)              
+      52 +  go consumer.ConsumeTweets(ctx)                               
+      53 +  go consumer.ConsumeFollows(ctx)                              
+      54 +                                                               
+      55    userUC := usecase.NewUserUseCase(userRepo)
+      43 -  tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, follo
+         -wRepo, redisTimeline)                                          
+      44 -  followUC := usecase.NewFollowUseCase(userRepo, followRepo)   
+      56 +  tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, publi
+         +sher)                                                          
+      57 +  followUC := usecase.NewFollowUseCase(userRepo, followRepo, pu
+         +blisher)                                                       
+      58    timelineUC := usecase.NewTimelineUseCase(userRepo, redisTimel
+          ine)
+      59  
+      60    router := handler.NewRouter(
+
+⏺ Now updating the tests. The tweet tests reference followRepo and fanout in the
+   constructor — those are gone.
+
+⏺ Write(internal/usecase/mocks_test.go)
+  ⎿  Added 14 lines, removed 9 lines
+      58    return m.items, m.err
+      59  }
+      60  
+      61 -type mockTimelineFanout struct {                               
+      62 -  appendErr error                                              
+      63 -  calls     []fanoutCall                                       
+      61 +type mockTweetPublisher struct {                               
+      62 +  publishErr error                                             
+      63 +  calls      []domain.TweetCreatedEvent                        
+      64  }
+      65  
+      66 -type fanoutCall struct {                                       
+      67 -  userID uuid.UUID                                             
+      68 -  item   domain.TweetItem                                      
+      66 +func (m *mockTweetPublisher) PublishTweetCreated(ctx context.Co
+         +ntext, evt domain.TweetCreatedEvent) error {                   
+      67 +  m.calls = append(m.calls, evt)                               
+      68 +  return m.publishErr                                          
+      69  }
+      70  
+      71 -func (m *mockTimelineFanout) AppendTweet(ctx context.Context, u
+         -serID uuid.UUID, item domain.TweetItem) error {                
+      72 -  m.calls = append(m.calls, fanoutCall{userID: userID, item: it
+         -em})                                                           
+      73 -  return m.appendErr                                           
+      71 +type mockFollowPublisher struct {                              
+      72 +  publishErr error                                             
+      73 +  calls      []domain.FollowCreatedEvent                       
+      74  }
+      75 +                                                               
+      76 +func (m *mockFollowPublisher) PublishFollowCreated(ctx context.
+         +Context, evt domain.FollowCreatedEvent) error {                
+      77 +  m.calls = append(m.calls, evt)                               
+      78 +  return m.publishErr                                          
+      79 +}                                                              
+
+⏺ Write(internal/usecase/tweet_test.go)
+  ⎿  Added 24 lines, removed 43 lines
+      12  func TestTweetUseCase_CreateTweet_OK(t *testing.T) {
+      13    userID := uuid.New()
+      14    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, U
+          sername: "alice"}}
+      15 -  tweetRepo := &mockTweetRepo{}                                
+      16 -  followRepo := &mockFollowRepo{}                              
+      17 -  fanout := &mockTimelineFanout{}                              
+      18 -  uc := usecase.NewTweetUseCase(userRepo, tweetRepo, followRepo
+         -, fanout)                                                      
+      15 +  publisher := &mockTweetPublisher{}                           
+      16 +  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pub
+         +lisher)                                                        
+      17  
+      18    tweet, err := uc.CreateTweet(context.Background(), userID, "h
+          ello world")
+      19    if err != nil {
+     ...
+      28  }
+      29  
+      30  func TestTweetUseCase_CreateTweet_EmptyContent(t *testing.T) {
+      33 -  uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo
+         -{}, &mockFollowRepo{}, &mockTimelineFanout{})                  
+      31 +  uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo
+         +{}, &mockTweetPublisher{})                                     
+      32    _, err := uc.CreateTweet(context.Background(), uuid.New(), ""
+          )
+      33    if err != domain.ErrEmptyContent {
+      34      t.Fatalf("want ErrEmptyContent, got %v", err)
+     ...
+      36  }
+      37  
+      38  func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) 
+          {
+      41 -  uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo
+         -{}, &mockFollowRepo{}, &mockTimelineFanout{})                  
+      39 +  uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo
+         +{}, &mockTweetPublisher{})                                     
+      40    content := string(make([]rune, 281))
+      41    _, err := uc.CreateTweet(context.Background(), uuid.New(), co
+          ntent)
+      42    if err != domain.ErrContentTooLong {
+     ...
+      46  
+      47  func TestTweetUseCase_CreateTweet_UserNotFound(t *testing.T) {
+      48    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      51 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, &mo
+         -ckFollowRepo{}, &mockTimelineFanout{})                         
+      49 +  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, &mo
+         +ckTweetPublisher{})                                            
+      50  
+      51    _, err := uc.CreateTweet(context.Background(), uuid.New(), "h
+          ello")
+      52    if err != domain.ErrNotFound {
+     ...
+       54    }
+       55  }
+       56  
+       59 -func TestTweetUseCase_CreateTweet_FanoutToFollowers(t *testing
+          -.T) {                                                         
+       57 +func TestTweetUseCase_CreateTweet_PublishesEvent(t *testing.T)
+          + {                                                            
+       58    userID := uuid.New()
+       61 -  follower1 := uuid.New()                                     
+       62 -  follower2 := uuid.New()                                     
+       63 -                                                              
+       59    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, 
+           Username: "bob"}}
+       65 -  followRepo := &mockFollowRepo{followers: []uuid.UUID{followe
+          -r1, follower2}}                                               
+       66 -  fanout := &mockTimelineFanout{}                             
+       67 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, fo
+          -llowRepo, fanout)                                             
+       60 +  publisher := &mockTweetPublisher{}                          
+       61 +  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pu
+          +blisher)                                                      
+       62  
+       69 -  _, err := uc.CreateTweet(context.Background(), userID, "fano
+          -ut this")                                                     
+       63 +  _, err := uc.CreateTweet(context.Background(), userID, "asyn
+          +c fanout")                                                    
+       64    if err != nil {
+       65      t.Fatalf("unexpected error: %v", err)
+       66    }
+       73 -  if len(fanout.calls) != 2 {                                 
+       74 -    t.Fatalf("want 2 fanout calls, got %d", len(fanout.calls))
+       67 +  if len(publisher.calls) != 1 {                              
+       68 +    t.Fatalf("want 1 publish call, got %d", len(publisher.call
+          +s))                                                           
+       69    }
+       76 -  if fanout.calls[0].item.Content != "fanout this" {          
+       77 -    t.Fatalf("want content 'fanout this', got %s", fanout.call
+          -s[0].item.Content)                                            
+       70 +  evt := publisher.calls[0]                                   
+       71 +  if evt.Content != "async fanout" {                          
+       72 +    t.Fatalf("want content 'async fanout', got %s", evt.Conten
+          +t)                                                            
+       73    }
+       79 -  if fanout.calls[0].item.Username != "bob" {                 
+       80 -    t.Fatalf("want username 'bob', got %s", fanout.calls[0].it
+          -em.Username)                                                  
+       74 +  if evt.Username != "bob" {                                  
+       75 +    t.Fatalf("want username 'bob', got %s", evt.Username)     
+       76    }
+       77 +  if evt.UserID != userID {                                   
+       78 +    t.Fatalf("want userID %s, got %s", userID, evt.UserID)    
+       79 +  }                                                           
+       80  }
+       81  
+       84 -func TestTweetUseCase_CreateTweet_FanoutErrorIsIgnored(t *test
+          -ing.T) {                                                      
+       82 +func TestTweetUseCase_CreateTweet_PublishErrorIsIgnored(t *tes
+          +ting.T) {                                                     
+       83    userID := uuid.New()
+       84    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, 
+           Username: "alice"}}
+       87 -  followRepo := &mockFollowRepo{followers: []uuid.UUID{uuid.Ne
+          -w()}}                                                         
+       88 -  fanout := &mockTimelineFanout{appendErr: domain.ErrNotFound}
+       89 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, fo
+          -llowRepo, fanout)                                             
+       85 +  publisher := &mockTweetPublisher{publishErr: domain.ErrNotFo
+          +und}                                                          
+       86 +  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pu
+          +blisher)                                                      
+       87  
+       91 -  _, err := uc.CreateTweet(context.Background(), userID, "igno
+          -re fanout error")                                             
+       88 +  _, err := uc.CreateTweet(context.Background(), userID, "igno
+          +re publish error")                                            
+       89    if err != nil {
+       93 -    t.Fatalf("fanout error must not propagate, got: %v", err) 
+       90 +    t.Fatalf("publish error must not propagate, got: %v", err)
+       91    }
+       92  }
+       96 -                                                              
+       97 -func TestTweetUseCase_CreateTweet_NoFollowers_NoFanout(t *test
+          -ing.T) {                                                      
+       98 -  userID := uuid.New()                                        
+       99 -  userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, 
+          -Username: "loner"}}                                           
+      100 -  followRepo := &mockFollowRepo{followers: []uuid.UUID{}}     
+      101 -  fanout := &mockTimelineFanout{}                             
+      102 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, fo
+          -llowRepo, fanout)                                             
+      103 -                                                              
+      104 -  _, err := uc.CreateTweet(context.Background(), userID, "nobo
+          -dy follows me")                                               
+      105 -  if err != nil {                                             
+      106 -    t.Fatalf("unexpected error: %v", err)                     
+      107 -  }                                                           
+      108 -  if len(fanout.calls) != 0 {                                 
+      109 -    t.Fatalf("want 0 fanout calls, got %d", len(fanout.calls))
+      110 -  }                                                           
+      111 -}                                                             
+
+⏺ Write(internal/usecase/follow_test.go)
+  ⎿  Added 27 lines, removed 4 lines
+      14    followee := uuid.New()
+      15    userRepo := &mockUserRepo{getUser: &domain.User{ID: followee}
+          }
+      16    followRepo := &mockFollowRepo{}
+      17 -  uc := usecase.NewFollowUseCase(userRepo, followRepo)         
+      17 +  publisher := &mockFollowPublisher{}                          
+      18 +  uc := usecase.NewFollowUseCase(userRepo, followRepo, publishe
+         +r)                                                             
+      19  
+      20    if err := uc.Follow(context.Background(), follower, followee)
+          ; err != nil {
+      21      t.Fatalf("unexpected error: %v", err)
+     ...
+      24  
+      25  func TestFollowUseCase_Follow_SelfFollow(t *testing.T) {
+      26    id := uuid.New()
+      26 -  uc := usecase.NewFollowUseCase(&mockUserRepo{}, &mockFollowRe
+         -po{})                                                          
+      27 +  uc := usecase.NewFollowUseCase(&mockUserRepo{}, &mockFollowRe
+         +po{}, &mockFollowPublisher{})                                  
+      28  
+      29    err := uc.Follow(context.Background(), id, id)
+      30    if err != domain.ErrSelfFollow {
+     ...
+      36    follower := uuid.New()
+      37    followee := uuid.New()
+      38    followRepo := &mockFollowRepo{existsResult: true}
+      38 -  uc := usecase.NewFollowUseCase(&mockUserRepo{}, followRepo)  
+      39 +  uc := usecase.NewFollowUseCase(&mockUserRepo{}, followRepo, &
+         +mockFollowPublisher{})                                         
+      40  
+      41    err := uc.Follow(context.Background(), follower, followee)
+      42    if err != domain.ErrAlreadyFollowing {
+     ...
+      48    follower := uuid.New()
+      49    followee := uuid.New()
+      50    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      50 -  uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{})  
+      51 +  uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, &
+         +mockFollowPublisher{})                                         
+      52  
+      53    err := uc.Follow(context.Background(), follower, followee)
+      54    if err != domain.ErrNotFound {
+      55      t.Fatalf("want ErrNotFound, got %v", err)
+      56    }
+      57  }
+      58 +                                                               
+      59 +func TestFollowUseCase_Follow_PublishesEvent(t *testing.T) {   
+      60 +  follower := uuid.New()                                       
+      61 +  followee := uuid.New()                                       
+      62 +  userRepo := &mockUserRepo{getUser: &domain.User{ID: followee}
+         +}                                                              
+      63 +  publisher := &mockFollowPublisher{}                          
+      64 +  uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, p
+         +ublisher)                                                      
+      65 +                                                               
+      66 +  if err := uc.Follow(context.Background(), follower, followee)
+         +; err != nil {                                                 
+      67 +    t.Fatalf("unexpected error: %v", err)                      
+      68 +  }                                                            
+      69 +  if len(publisher.calls) != 1 {                               
+      70 +    t.Fatalf("want 1 publish call, got %d", len(publisher.calls
+         +))                                                             
+      71 +  }                                                            
+      72 +  evt := publisher.calls[0]                                    
+      73 +  if evt.FollowerID != follower {                              
+      74 +    t.Fatalf("want followerID %s, got %s", follower, evt.Follow
+         +erID)                                                          
+      75 +  }                                                            
+      76 +  if evt.FolloweeID != followee {                              
+      77 +    t.Fatalf("want followeeID %s, got %s", followee, evt.Follow
+         +eeID)                                                          
+      78 +  }                                                            
+      79 +}                                                              
+
+⏺ Now let me check if the handler mocks reference the old usecase constructors:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Good — handler tests use interface mocks, not concrete constructors. Now let's
+   verify it all compiles:
+
+⏺ Bash(go build ./...)
+  ⎿  (No output)
+
+⏺ Bash(go test ./internal/usecase/... ./internal/handler/... -v 2>&1 | tail -40)
+  ⎿     have (*postgres.UserRepository, *postgres.FollowRepository)
+        want (domain.UserRepository, domain.FollowRepository,
+     domain.FollowEve
+     ntPublisher)
+     … +27 lines (ctrl+o to expand)
+
+⏺ There's a build failure in handler — let me check the integration test:
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ The setup_test.go uses the old constructors. I need a no-op publisher for
+  integration tests since they don't connect to RabbitMQ.
+
+⏺ Update(internal/handler/setup_test.go)
+  ⎿  Added 2 lines, removed 2 lines
+      80  
+      81    router := handler.NewRouter(
+      82      handler.NewUserHandler(usecase.NewUserUseCase(userRepo)),
+      83 -    handler.NewTweetHandler(usecase.NewTweetUseCase(userRepo, t
+         -weetRepo, followRepo, redisTimeline)),                         
+      84 -    handler.NewFollowHandler(usecase.NewFollowUseCase(userRepo,
+         - followRepo)),                                                 
+      83 +    handler.NewTweetHandler(usecase.NewTweetUseCase(userRepo, t
+         +weetRepo, &noopTweetPublisher{})),                             
+      84 +    handler.NewFollowHandler(usecase.NewFollowUseCase(userRepo,
+         + followRepo, &noopFollowPublisher{})),                         
+      85      handler.NewTimelineHandler(usecase.NewTimelineUseCase(userR
+          epo, redisTimeline)),
+      86    )
+      87    srv := httptest.NewServer(router)
+
+⏺ Now add the no-op publishers to the handler mocks file:
+
+⏺ Update(internal/handler/mocks_test.go)  ⎿  Added 12 lines
+       7    "uala/internal/domain"
+       8  )
+       9  
+      10 +type noopTweetPublisher struct{}                               
+      11 +                                                               
+      12 +func (n *noopTweetPublisher) PublishTweetCreated(_ context.Cont
+         +ext, _ domain.TweetCreatedEvent) error {                       
+      13 +  return nil                                                   
+      14 +}                                                              
+      15 +                                                               
+      16 +type noopFollowPublisher struct{}                              
+      17 +                                                               
+      18 +func (n *noopFollowPublisher) PublishFollowCreated(_ context.Co
+         +ntext, _ domain.FollowCreatedEvent) error {                    
+      19 +  return nil                                                   
+      20 +}                                                              
+      21 +                                                               
+      22  type mockUserSvc struct {
+      23    user *domain.User
+      24    err  error
+
+⏺ Bash(go build ./... && go test ./internal/usecase/... ./internal/handler/...
+      -v 2>&1 | tail -30)
+  ⎿  --- PASS: TestFollowHandler_Follow_MissingUserID (0.00s)
+     === RUN   TestFollowHandler_Follow_SelfFollow
+     --- PASS: TestFollowHandler_Follow_SelfFollow (0.00s)
+     … +18 lines (ctrl+o to expand)
+
+⏺ All tests pass.
+
+⏺ All 8 tasks complete. Using the finishing skill now.
+
+⏺ Skill(superpowers:finishing-a-development-branch)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the finishing-a-development-branch skill to complete this work.
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ?          uala/cmd/api    [no test files]
+     ?          uala/internal/domain    [no test files]
+     ok         uala/internal/handler   0.334s
+     … +5 lines (ctrl+o to expand)
+
+⏺ All tests pass. This is not a git-worktree session, so presenting the options
+  directly:
+
+  Implementation complete. What would you like to do?
+
+  1. Merge back to main locally
+  2. Push and create a Pull Request
+  3. Keep the branch as-is (I'll handle it later)
+  4. Discard this work
+
+  Which option?
+
+✻ Cooked for 5m 11s
+
+※ recap: Iter 3 added async RabbitMQ messaging: tweets and follows now publish events instead of doing sync fanout, with consumers handling Redis updates in the background. All tests pass — choose how to wrap up (merge, PR, keep, or discard).

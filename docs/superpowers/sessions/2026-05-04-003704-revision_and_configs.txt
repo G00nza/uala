@@ -1,0 +1,1348 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ analiza esta kata y dime los gaps que dejo abierto el candidato, las          
+  consignas dadas estan en @Consignas.md                                        
+  ⎿  Read Consignas.md (65 lines)
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+⏺ Now let me read the key files in parallel.
+
+  Read 18 files (ctrl+o to expand)
+
+⏺ Noto que ya hay un análisis previo en docs/superpowers/gaps.md, pero necesito
+  verificarlo contra el código actual porque puede estar desactualizado.
+
+  Searched for 1 pattern, read 14 files (ctrl+o to expand)
+
+⏺ Tengo todo el contexto necesario. El docs/superpowers/gaps.md es un análisis
+  anterior que está desactualizado — los ítems críticos y medios que describe ya
+   están resueltos en el código actual. Aquí está el análisis actualizado de los
+   gaps reales en el estado actual del código:
+
+  ---
+  Gaps reales del candidato (estado actual del código)
+
+  Lo que el análisis previo decía como crítico — ya resuelto
+
+  ┌───────────────────┬─────────────────────────────────────────────────────┐
+  │  Gap del gaps.md  │                     Estado real                     │
+  ├───────────────────┼─────────────────────────────────────────────────────┤
+  │ Fanout secuencial │ ❌ Falso — fanoutConcurrency = 100 con errgroup +   │
+  │                   │ semáforo                                            │
+  ├───────────────────┼─────────────────────────────────────────────────────┤
+  │ Bug en tests de   │ ❌ Falso — setup_test.go llama correctamente con 3  │
+  │ integración       │ args                                                │
+  ├───────────────────┼─────────────────────────────────────────────────────┤
+  │ Sin graceful      │ ❌ Falso — signal.NotifyContext + srv.Shutdown con  │
+  │ shutdown          │ 10s timeout                                         │
+  ├───────────────────┼─────────────────────────────────────────────────────┤
+  │                   │ ❌ Falso — hay DLQ completa: fanout.retry →         │
+  │ Sin DLQ           │ fanout.wait (30s TTL) → fanout.dead, max 10         │
+  │                   │ reintentos                                          │
+  ├───────────────────┼─────────────────────────────────────────────────────┤
+  │ Publish errors    │ ❌ Falso — ambos use cases (tweet y follow) loggean │
+  │ silenciosos       │  el error con uc.logger.ErrorContext                │
+  └───────────────────┴─────────────────────────────────────────────────────┘
+
+  ---
+  🔴 Gap crítico real
+
+  Celebrity/hot user problem — el fanout de 100 workers no escala a millones de 
+  seguidores
+
+  El enunciado pide explícitamente escalar a millones de usuarios. Con 100
+  goroutines concurrentes, un tweet de un usuario con 10M seguidores requiere
+  10M escrituras a Redis. Cada escritura incluye ZADD + HSetNX → 20M
+  operaciones. Esto bloquea el consumer de RabbitMQ durante minutos.
+
+  Lo esperado: modelo híbrido push/pull — fanout solo hacia usuarios "activos"
+  (última actividad < N horas), los seguidores de celebrities reciben pull-based
+   timeline al leer.
+
+  ---
+  🟠 Gaps medios
+
+  Sin reconexión AMQP
+
+  rabbitmq.Connect() abre una conexión una sola vez. Si RabbitMQ cae o la red se
+   interrumpe post-startup, los tres goroutines consumidores mueren y nunca se
+  recuperan. openChannel() en el consumer intenta una vez y retorna nil sin loop
+   de reconexión.
+
+  Publisher abre un nuevo channel por mensaje
+
+  En publisher.go, cada llamada a publish() crea un conn.Channel(), publica, y
+  cierra. Los AMQP channels están diseñados para ser long-lived. Bajo carga
+  moderada esto genera overhead significativo de round-trips con el broker.
+
+  Sin paginación en timeline
+
+  GET /timeline devuelve hasta TIMELINE_LIMIT (500) items en una sola respuesta
+  JSON. No hay cursor, page token ni limit/offset. El OpenAPI spec lo menciona
+  como backlog pero no está implementado. Para lecturas optimizadas a escala,
+  esto es un gap real.
+
+  ---
+  🟡 Gaps bajos
+
+  Discrepancia documentación-código en Redis
+
+  docs/iterations/iter-2-redis.md y docs/tradeoffs/redis-timeline-storage.md
+  documentan la estrategia "JSON completo como member del sorted set". El código
+   real usa sorted set (ID como member) + hash separado
+  (timeline:data:{user_id}). La implementación real es la alternativa del
+  tradeoff doc, no la estrategia documentada.
+
+  Sin TTL en claves de Redis
+
+  timeline:{user_id} y timeline:data:{user_id} nunca expiran. El allkeys-lru de
+  Redis funciona como safety net pero usuarios inactivos acumulan timelines
+  obsoletos indefinidamente. TTLs explícitos darían mejor control de memoria.
+
+  Tests de integración no cubren el path async
+
+  Los integration tests usan noopTweetPublisher y noopFollowPublisher. El flujo
+  real de producción (HTTP → RabbitMQ → consumer → Redis fanout → GET timeline
+  desde Redis) nunca se testea end-to-end. Solo el repository layer de Redis y
+  Postgres se testa en aislamiento.
+
+  ---
+  Resumen ejecutivo
+
+  ┌───────────┬──────────────────────────────────────────────────────────────┐
+  │ Severidad │                             Gap                              │
+  ├───────────┼──────────────────────────────────────────────────────────────┤
+  │ 🔴 Alta   │ Celebrity problem: fanout no escala a millones de seguidores │
+  ├───────────┼──────────────────────────────────────────────────────────────┤
+  │ 🟠 Media  │ Sin reconexión AMQP post-startup                             │
+  ├───────────┼──────────────────────────────────────────────────────────────┤
+  │ 🟠 Media  │ Publisher abre channel por mensaje (caro bajo carga)         │
+  ├───────────┼──────────────────────────────────────────────────────────────┤
+  │ 🟠 Media  │ Sin paginación en timeline                                   │
+  ├───────────┼──────────────────────────────────────────────────────────────┤
+  │ 🟡 Baja   │ Docs describen estrategia Redis distinta a la implementada   │
+  ├───────────┼──────────────────────────────────────────────────────────────┤
+  │ 🟡 Baja   │ Sin TTL en claves de Redis                                   │
+  ├───────────┼──────────────────────────────────────────────────────────────┤
+  │ 🟡 Baja   │ Integration tests no cubren path RabbitMQ → Redis            │
+  └───────────┴──────────────────────────────────────────────────────────────┘
+
+  Evaluación global: Entrega muy sólida para Senior Mid. El candidato fue
+  notablemente más allá de los mínimos: DLQ con backoff exponencial
+  (fanout.retry → fanout.wait → fanout.dead), backfill al hacer follow, métricas
+   Prometheus + dashboard Grafana, migraciones versionadas con goose, graceful
+  shutdown, clean architecture bien separada. El gap principal contra el
+  enunciado es el celebrity problem, que es precisamente el desafío de escala
+  que la consigna priorizaba.
+  ⎿  You've hit your limit · resets 4:50pm (Europe/Madrid)
+     /upgrade to increase your usage limit.
+
+✻ Baked for 3m 14s
+
+❯ sobreecribe los gaps con los encontrados                                      
+
+⏺ Exited plan mode
+
+⏺ Write(docs/superpowers/gaps.md)
+  ⎿  Added 70 lines, removed 54 lines
+        1 -# Gaps de conocimiento detectados                             
+        1 +# Gaps del candidato — análisis actualizado                   
+        2  
+        3  ## Seniority estimado: Senior Mid / Senior temprano (3-5 años)
+        4  
+        5 +> Nota: un análisis previo identificaba como críticos issues d
+          +e fanout secuencial, bug en tests,                            
+        6 +> falta de graceful shutdown, ausencia de DLQ y publish errors
+          + silenciosos. Todos esos items                                
+        7 +> están resueltos en el código actual. Este documento refleja 
+          +los gaps reales del estado presente.                          
+        8 +                                                              
+        9  ---
+       10  
+        7 -## Gaps críticos                                              
+       11 +## Gap crítico                                                
+       12  
+        9 -### 1. Fanout no escala a millones de seguidores              
+       10 -El consumer de `tweet.created` hace un `GetFollowers` y escrib
+          -e a Redis secuencialmente para cada seguidor.                 
+       11 -Para un usuario con 1M seguidores bloquea el único goroutine c
+          -onsumidor durante minutos.                                    
+       12 -El enunciado pide explícitamente escalar a millones de usuario
+          -s.                                                            
+       13 +### 1. Celebrity/hot user problem — fanout no escala a millone
+          +s de seguidores                                               
+       14  
+       14 -**Lo esperado:** fanout concurrente con `errgroup`/semáforo, o
+          - modelo híbrido push/pull (fanout solo para usuarios activos, 
+          -pull para celebrities).                                       
+       15 +El `consumer.go` usa `fanoutConcurrency = 100` goroutines con 
+          +errgroup + semáforo para hacer                                
+       16 +fanout a Redis. Para un usuario con 10M seguidores, eso sigue 
+          +implicando 10M ZADD + 10M HSetNX                              
+       17 +(20M operaciones Redis) por cada tweet, bloqueando el consumer
+          + durante minutos.                                             
+       18  
+       16 -### 2. Bug en tests de integración — constructor con aridad in
+          -correcta                                                      
+       17 -En `handler/integration_test.go` o `setup_test.go`:           
+       18 -```go                                                         
+       19 -redisrepo.NewTimelineRepository(testRDB, pgTimeline)  // 2 arg
+          -s                                                             
+       20 -```                                                           
+       21 -El constructor real requiere 3 argumentos (incluye `limit int`
+          -). Los tests no compilan tal como están.                      
+       22 -Indica que no se corrió `go test ./...` antes de entregar.    
+       19 +El enunciado pide explícitamente escalar a millones de usuario
+          +s.                                                            
+       20  
+       21 +**Lo esperado:** modelo híbrido push/pull — fanout solo a usua
+          +rios "activos" (última actividad                              
+       22 +< N horas); los seguidores de celebrities reciben pull-based t
+          +imeline al momento de leer.                                   
+       23 +                                                              
+       24  ---
+       25  
+       26  ## Gaps medios
+       27  
+       28 -### 3. Sin graceful shutdown                                  
+       29 -`main.go` usa `http.ListenAndServe` sin manejo de señales SIGT
+          -ERM/SIGINT.                                                   
+       30 -Los goroutines consumidores de RabbitMQ reciben un `context.Ba
+          -ckground()` que nunca cancela.                                
+       31 -En producción, un deploy/restart mataría conexiones y mensajes
+          - en vuelo.                                                    
+       28 +### 2. Sin reconexión AMQP post-startup                       
+       29  
+       33 -**Lo esperado:** `signal.NotifyContext`, shutdown del servidor
+          - con timeout, cancelación del contexto propagada a consumidore
+          -s.                                                            
+       30 +`rabbitmq.Connect()` abre una conexión una sola vez sin lógica
+          + de reconexión. Si RabbitMQ cae                               
+       31 +o la red se interrumpe después del arranque, los tres goroutin
+          +es consumidores                                               
+       32 +(`ConsumeTweets`, `ConsumeFollows`, `ConsumeFanoutRetry`) muer
+          +en y nunca se recuperan.                                      
+       33 +`openChannel()` intenta una vez y retorna `nil` sin loop de ba
+          +ckoff.                                                        
+       34  
+       35 -### 4. Sin reconexión AMQP ni Dead Letter Queue               
+       36 -Si la conexión AMQP cae, el consumidor muere sin reintentar.  
+       37 -No hay DLQ configurada. El `Nack(..., requeue=true)` puede cre
+          -ar un loop infinito si el mensaje siempre falla.              
+       35 +**Lo esperado:** reconnect loop con backoff exponencial, re-de
+          +claración de queues tras reconexión.                          
+       36  
+       39 -**Lo esperado:** DLQ, backoff exponencial en reconexión, límit
+          -e de reintentos por mensaje.                                  
+       37 +### 3. Publisher abre un nuevo channel AMQP por mensaje       
+       38  
+       41 -### 5. Publish errors silenciosos sin logging                 
+       42 -```go                                                         
+       43 -_ = uc.publisher.PublishTweetCreated(ctx, event)              
+       44 -```                                                           
+       45 -La pérdida del evento ni siquiera se loggea. Un fallo de conex
+          -ión a RabbitMQ al publicar es invisible salvo por síntomas dow
+          -nstream.                                                      
+       46 -Hay métricas de `rabbitmq_messages_failed_total` en el consume
+          -r pero no en el publisher.                                    
+       39 +En `publisher.go`, cada llamada a `publish()` ejecuta `conn.Ch
+          +annel()`, publica, y hace                                     
+       40 +`ch.Close()`. Los canales AMQP están diseñados para ser long-l
+          +ived. Bajo carga (muchos tweets                               
+       41 +en corto tiempo) esto genera un round-trip adicional al broker
+          + por mensaje.                                                 
+       42  
+       43 +**Lo esperado:** channel persistente por goroutine o un pool d
+          +e channels.                                                   
+       44 +                                                              
+       45 +### 4. Sin paginación en el timeline                          
+       46 +                                                              
+       47 +`GET /timeline` devuelve hasta `TIMELINE_LIMIT` (default 500) 
+          +items en una sola respuesta JSON.                             
+       48 +No hay cursor, page token ni `limit`/`offset` params. El OpenA
+          +PI spec lo menciona como backlog                              
+       49 +pero no está implementado. Para lecturas optimizadas a escala,
+          + una respuesta de 500 tweets                                  
+       50 +serializada completa es un anti-patrón.                       
+       51 +                                                              
+       52 +**Lo esperado:** cursor-based pagination (e.g. `?before=<tweet
+          +_id>&limit=20`).                                              
+       53 +                                                              
+       54  ---
+       55  
+       56  ## Gaps bajos
+       57  
+       52 -### 6. Sin paginación en timeline                             
+       53 -`GET /timeline` devuelve hasta 500 tweets en una sola respuest
+          -a.                                                            
+       54 -No hay cursor-based pagination ni `limit`/`offset` en la API. 
+       55 -El OpenAPI spec menciona paginación como "backlog" pero no est
+          -á implementada.                                               
+       58 +### 5. Discrepancia documentación-código en Redis             
+       59  
+       57 -### 7. Migraciones inline en startup                          
+       58 -`Migrate()` ejecuta `CREATE TABLE IF NOT EXISTS` directamente 
+          -en el arranque del servidor.                                  
+       59 -No usa herramientas estándar como `golang-migrate`, `goose` o 
+          -`atlas`.                                                      
+       60 -Riesgo: cambios de schema en producción sin versionado ni roll
+          -back capability.                                              
+       60 +`docs/iterations/iter-2-redis.md` y `docs/tradeoffs/redis-time
+          +line-storage.md` documentan la                                
+       61 +estrategia de guardar el JSON completo del tweet como member d
+          +el sorted set. El código real usa                             
+       62 +sorted set (ID como member) + hash separado (`timeline:data:{u
+          +ser_id}`). La implementación                                  
+       63 +corresponde a la "alternativa considerada" del tradeoff doc, n
+          +o a la opción documentada como                                
+       64 +adoptada.                                                     
+       65  
+       62 -### 8. Sin validación de existencia del usuario en el contexto
+       63 -`parseUserID` lee el header `X-User-ID` como UUID pero no veri
+          -fica que el usuario exista en todos los endpoints.            
+       64 -Un UUID válido pero inexistente puede comportarse de forma inc
+          -onsistente según el endpoint.                                 
+       66 +### 6. Sin TTL en claves de Redis                             
+       67  
+       66 -### 9. Use cases sin interfaz propia (debatible)              
+       67 -El ADR-001 lo justifica con "private interfaces en handlers co
+          -mo testing seam", pero:                                       
+       68 -- Impide mockear use cases entre sí si alguno necesita llamar 
+          -a otro.                                                       
+       69 -- Complica la transición a arquitecturas como gRPC donde las i
+          -nterfaces de servicio son el contrato.                        
+       70 -Es una decisión documentada y válida, pero muestra desconocimi
+          -ento del trade-off completo.                                  
+       68 +`timeline:{user_id}` y `timeline:data:{user_id}` nunca expiran
+          +. La política `allkeys-lru`                                   
+       69 +actúa como safety net pero usuarios inactivos acumulan timelin
+          +es obsoletos indefinidamente.                                 
+       70 +TTLs explícitos darían control predecible sobre el consumo de 
+          +memoria.                                                      
+       71  
+       72 +### 7. Integration tests no cubren el path async completo     
+       73 +                                                              
+       74 +Los integration tests usan `noopTweetPublisher` y `noopFollowP
+          +ublisher`. El flujo de producción                             
+       75 +real (HTTP → RabbitMQ → consumer → Redis fanout → GET timeline
+          + desde Redis) nunca se testea                                 
+       76 +end-to-end. Solo los repository layers de Redis y Postgres se 
+          +testean en aislamiento. El                                    
+       77 +happy path del sistema no está cubierto como test de aceptació
+          +n.                                                            
+       78 +                                                              
+       79  ---
+       80  
+       81  ## Resumen
+       82  
+       83  | Severidad | Gap |
+       84  |---|---|
+       78 -| 🔴 Alta | Fanout no escala (core del enunciado) |           
+       79 -| 🔴 Alta | Bug en tests de integración (no compilan) |       
+       80 -| 🟠 Media | Sin graceful shutdown |                          
+       81 -| 🟠 Media | Sin reconexión AMQP / DLQ |                      
+       82 -| 🟠 Media | Publish errors sin logging |                     
+       83 -| 🟡 Baja | Sin paginación |                                  
+       84 -| 🟡 Baja | Migraciones inline |                              
+       85 -| 🟡 Baja | Validación de usuario en contexto |               
+       86 -| 🟡 Baja | Use cases sin interfaz propia |                   
+       85 +| 🔴 Alta | Celebrity problem: fanout no escala a millones de 
+          +seguidores |                                                  
+       86 +| 🟠 Media | Sin reconexión AMQP post-startup |               
+       87 +| 🟠 Media | Publisher abre channel por mensaje (caro bajo car
+          +ga) |                                                         
+       88 +| 🟠 Media | Sin paginación en timeline |                     
+       89 +| 🟡 Baja | Docs describen estrategia Redis distinta a la impl
+          +ementada |                                                    
+       90 +| 🟡 Baja | Sin TTL en claves de Redis |                      
+       91 +| 🟡 Baja | Integration tests no cubren path RabbitMQ → Redis 
+          +|                                                             
+       92 +                                                              
+       93 +---                                                           
+       94 +                                                              
+       95 +## Evaluación global                                          
+       96 +                                                              
+       97 +Entrega muy sólida para Senior Mid. El candidato fue notableme
+          +nte más allá de los mínimos:                                  
+       98 +DLQ con backoff exponencial (fanout.retry → fanout.wait 30s TT
+          +L → fanout.dead, máx 10 reintentos),                          
+       99 +backfill al hacer follow, métricas Prometheus + dashboard Graf
+          +ana, migraciones versionadas con                              
+      100 +goose, graceful shutdown con timeout, clean architecture bien 
+          +separada. El gap principal contra                             
+      101 +el enunciado es el celebrity problem, que es precisamente el d
+          +esafío de escala que la consigna                              
+      102 +priorizaba.                                                   
+
+⏺ gaps.md sobreescrito. El análisis previo tenía 5 ítems "críticos/medios" que
+  ya no aplican — todos resueltos en el código actual. El documento ahora
+  refleja los 7 gaps reales, con el celebrity problem como único item de alta
+  severidad.
+
+✻ Sautéed for 44s
+
+❯ /context                                                                      
+  ⎿  Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛁ ⛁   Sonnet 4.6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-sonnet-4-6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   65.7k/200k tokens (33%)
+     ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 6.4k tokens (3.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 7.6k tokens (3.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 247 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Skills: 2k tokens (1.0%)
+     ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Messages: 49.9k tokens (24.9%)
+                           ⛶ Free space: 101k (50.5%)
+                           ⛝ Autocompact buffer: 33k tokens (16.5%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__create_draft
+     ├ mcp__claude_ai_Gmail__create_label
+     ├ mcp__claude_ai_Gmail__get_thread
+     ├ mcp__claude_ai_Gmail__label_message
+     ├ mcp__claude_ai_Gmail__label_thread
+     ├ mcp__claude_ai_Gmail__list_drafts
+     ├ mcp__claude_ai_Gmail__list_labels
+     ├ mcp__claude_ai_Gmail__search_threads
+     ├ mcp__claude_ai_Gmail__unlabel_message
+     ├ mcp__claude_ai_Gmail__unlabel_thread
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     └ mcp__claude_ai_Google_Drive__complete_authentication
+
+     Custom agents · /agents
+
+     Plugin
+     └ superpowers:code-reviewer: 247 tokens
+
+     Skills · /skills
+
+     User
+     ├ golang: 49 tokens
+     ├ golang:architecture: 14 tokens
+     ├ golang:dependency-injection: 12 tokens
+     ├ golang:repository-layer: 10 tokens
+     ├ golang:handler-layer: 10 tokens
+     ├ golang:modules-tooling: 10 tokens
+     ├ golang:logging: 10 tokens
+     ├ golang:usecase-layer: 9 tokens
+     ├ golang:project-layout: 9 tokens
+     ├ golang:error-handling: 9 tokens
+     ├ golang:domain-layer: 8 tokens
+     ├ golang:performance: 8 tokens
+     ├ golang:concurrency: 8 tokens
+     ├ golang:interfaces: 7 tokens
+     ├ golang:context: 6 tokens
+     ├ golang:testing: 6 tokens
+     ├ golang:security: 6 tokens
+     └ golang:naming: 5 tokens
+
+     Plugin
+     ├ backend-best-practices: 204 tokens
+     ├ verification-before-completion: 67 tokens
+     ├ receiving-code-review: 67 tokens
+     ├ finishing-a-development-branch: 61 tokens
+     ├ using-git-worktrees: 59 tokens
+     ├ brainstorming: 56 tokens
+     ├ using-superpowers: 47 tokens
+     ├ dispatching-parallel-agents: 37 tokens
+     ├ requesting-code-review: 36 tokens
+     ├ executing-plans: 33 tokens
+     ├ writing-skills: 31 tokens
+     ├ subagent-driven-development: 31 tokens
+     ├ systematic-debugging: 31 tokens
+     ├ test-driven-development: 29 tokens
+     ├ writing-plans: 28 tokens
+     ├ superpowers:execute-plan: 22 tokens
+     ├ superpowers:write-plan: 21 tokens
+     └ superpowers:brainstorm: 21 tokens
+
+      Suggestions
+      ℹ File reads using 17.9k tokens (9%) → save ~5.4k
+        If you are re-reading files, consider referencing earlier reads. Use 
+     offset/limit for large files.
+
+❯ explicame como solucinoar el gap 2                                            
+
+⏺ El gap 2 es reconexión AMQP cuando la conexión cae post-startup. Hay dos capas
+   a resolver:
+
+  ---
+  El problema actual
+
+  // client.go — una sola conexión, sin reconexión
+  func Connect(url string) (*amqp.Connection, error) {
+      conn, err := amqp.Dial(url)
+      // si esta conn cae después, nadie la recupera
+  }
+
+  // consumer.go — openChannel falla silenciosamente y el goroutine muere
+  func (c *Consumer) openChannel(queue string) (*amqp.Channel, <-chan 
+  amqp.Delivery) {
+      ch, err := c.conn.Channel()
+      if err != nil {
+          log.Printf(...)
+          return nil, nil  // goroutine retorna → consumer muerto para siempre
+      }
+  }
+
+  ---
+  La solución: dos niveles
+
+  Nivel 1 — Detectar que la conexión cayó
+
+  amqp.Connection expone un canal de notificación:
+
+  notifyClose := conn.NotifyClose(make(chan *amqp.Error, 1))
+  <-notifyClose  // se cierra cuando la conexión cae
+
+  Nivel 2 — Loop de reconexión con backoff
+
+  La forma más limpia es un wrapper que encapsula la reconexión y expone siempre
+   una conexión válida:
+
+  type ResilientConn struct {
+      url  string
+      mu   sync.RWMutex
+      conn *amqp.Connection
+  }
+
+  func (r *ResilientConn) reconnectLoop(ctx context.Context) {
+      backoff := time.Second
+      for {
+          conn, err := amqp.Dial(r.url)
+          if err != nil {
+              log.Printf("amqp: reconnect failed: %v, retrying in %s", err,
+  backoff)
+              select {
+              case <-ctx.Done():
+                  return
+              case <-time.After(backoff):
+                  backoff = min(backoff*2, 30*time.Second)
+                  continue
+              }
+          }
+          r.mu.Lock()
+          r.conn = conn
+          r.mu.Unlock()
+          backoff = time.Second  // reset al reconectar
+
+          notifyClose := conn.NotifyClose(make(chan *amqp.Error, 1))
+          select {
+          case <-ctx.Done():
+              return
+          case <-notifyClose:
+              log.Printf("amqp: connection lost, reconnecting...")
+          }
+      }
+  }
+
+  func (r *ResilientConn) Channel() (*amqp.Channel, error) {
+      r.mu.RLock()
+      defer r.mu.RUnlock()
+      return r.conn.Channel()
+  }
+
+  Nivel 3 — Los consumers también deben reiniciarse
+
+  El consumer no puede ser un goroutine que muere. Necesita un loop propio:
+
+  func (c *Consumer) runWithReconnect(ctx context.Context, queue string, handler
+   func(context.Context, amqp.Delivery)) {
+      for {
+          select {
+          case <-ctx.Done():
+              return
+          default:
+          }
+
+          ch, msgs := c.openChannel(queue)
+          if ch == nil {
+              time.Sleep(2 * time.Second)
+              continue
+          }
+
+          notifyClosed := ch.NotifyClose(make(chan *amqp.Error, 1))
+          for {
+              select {
+              case <-ctx.Done():
+                  ch.Close()
+                  return
+              case <-notifyClosed:
+                  // canal cayó, reiniciar loop externo
+                  goto reconnect
+              case d, ok := <-msgs:
+                  if !ok {
+                      goto reconnect
+                  }
+                  handler(ctx, d)
+              }
+          }
+      reconnect:
+          ch.Close()
+      }
+  }
+
+  Y los consumers en main.go quedan:
+
+  go consumer.runWithReconnect(ctx, rabbitmq.QueueTweetCreated,
+  consumer.handleTweetCreated)
+  go consumer.runWithReconnect(ctx, rabbitmq.QueueFollowCreated,
+  consumer.handleFollowCreated)
+  go consumer.runWithReconnect(ctx, rabbitmq.QueueFanoutRetry, ...)
+
+  ---
+  Por qué en dos niveles y no solo uno
+
+  ┌──────────────────────────────────────────┬──────────────────────────────┐
+  │         Solo reconectar la conn          │   Solo reiniciar channels    │
+  ├──────────────────────────────────────────┼──────────────────────────────┤
+  │ La conn nueva resuelve conn.Channel()    │ Los channels mueren cuando   │
+  │                                          │ la conn muere                │
+  ├──────────────────────────────────────────┼──────────────────────────────┤
+  │ Los channels existentes sobre la conn    │ No ayuda si la conn cayó     │
+  │ vieja siguen muertos                     │                              │
+  └──────────────────────────────────────────┴──────────────────────────────┘
+
+  Necesitás ambos: la conn se recupera sola, y los consumers detectan que su
+  channel cerró y piden uno nuevo a la conn ya recuperada.
+
+  ---
+  Alternativa más simple (sin wrapper)
+
+  Si no querés el wrapper, podés pasar la url string al consumer en lugar de
+  *amqp.Connection y que el consumer llame a amqp.Dial dentro de su propio loop.
+   Más acoplado pero más fácil de entender a primera vista.
+
+※ recap: Analizamos los gaps del candidato en la kata de microblogging. Explicamos cómo resolver la reconexión AMQP. No hay una próxima acción pendiente.
+
+❯ solucionalo con el wrapper                                                    
+⏺ Skill(superpowers:test-driven-development)
+  ⎿  Successfully loaded skill
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Voy a seguir TDD estrictamente. Primero el test rojo, luego la implementación.
+
+⏺ Write(internal/messaging/rabbitmq/resilient_conn_test.go)
+  ⎿  Wrote 106 lines to internal/messaging/rabbitmq/resilient_conn_test.go
+       1 package rabbitmq
+       2 
+       3 import (
+       4        "context"
+       5        "sync/atomic"
+       6        "testing"
+       7        "time"
+       8 
+       9        amqp "github.com/rabbitmq/amqp091-go"
+      10 )
+     … +100 lines (ctrl+o to expand)
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... 2>&1 | head -20)
+  ⎿  # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.t
+     est]
+     internal/messaging/rabbitmq/resilient_conn_test.go:35:28: undefined: C
+     … +13 lines (ctrl+o to expand)
+
+⏺ Test rojo confirmado. Ahora la implementación mínima:
+
+⏺ Write(internal/messaging/rabbitmq/resilient_conn.go)
+  ⎿  Wrote 88 lines to internal/messaging/rabbitmq/resilient_conn.go
+       1 package rabbitmq
+       2 
+       3 import (
+       4        "context"
+       5        "log"
+       6        "sync"
+       7        "time"
+       8 
+       9        amqp "github.com/rabbitmq/amqp091-go"
+      10 )
+     … +82 lines (ctrl+o to expand)
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -run TestResilientConn 2>&1)
+  ⎿  ok         uala/internal/messaging/rabbitmq        0.799s
+
+⏺ Tests verdes. Ahora integro ResilientConn al resto del sistema. Primero
+  client.go:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Write(internal/messaging/rabbitmq/client.go)
+  ⎿  Added 37 lines, removed 27 lines
+      1  package rabbitmq
+      2  
+      3  import (
+      4 +  "context"                                                     
+      5 +                                                                
+      6    amqp "github.com/rabbitmq/amqp091-go"
+      7  )
+      8  
+     ...
+      19    QueueFanoutDead = "fanout.dead"
+      20  )
+      21  
+      20 -func Connect(url string) (*amqp.Connection, error) {           
+      21 -  conn, err := amqp.Dial(url)                                  
+      22 -  if err != nil {                                              
+      23 -    return nil, err                                            
+      22 +// Connect dials RabbitMQ, declares the topology, and starts a 
+         +background                                                     
+      23 +// reconnect loop. The returned *ResilientConn is ready to use 
+         +immediately.                                                   
+      24 +func Connect(ctx context.Context, url string) (*ResilientConn, 
+         +error) {                                                       
+      25 +  dialFn := func(u string) (Conn, error) {                     
+      26 +    conn, err := amqp.Dial(u)                                  
+      27 +    if err != nil {                                            
+      28 +      return nil, err                                          
+      29 +    }                                                          
+      30 +    if err := declareTopology(conn); err != nil {              
+      31 +      conn.Close()                                             
+      32 +      return nil, err                                          
+      33 +    }                                                          
+      34 +    return conn, nil                                           
+      35    }
+      36  
+      37 +  rc := newResilientConn(url, dialFn)                          
+      38 +  go rc.reconnectLoop(ctx)                                     
+      39 +                                                               
+      40 +  select {                                                     
+      41 +  case <-rc.ready:                                             
+      42 +    return rc, nil                                             
+      43 +  case <-ctx.Done():                                           
+      44 +    return nil, ctx.Err()                                      
+      45 +  }                                                            
+      46 +}                                                              
+      47 +                                                               
+      48 +func declareTopology(conn *amqp.Connection) error {            
+      49    ch, err := conn.Channel()
+      50    if err != nil {
+      28 -    conn.Close()                                               
+      29 -    return nil, err                                            
+      51 +    return err                                                 
+      52    }
+      53    defer ch.Close()
+      54  
+      33 -  // colas pre-existentes                                      
+      55    for _, q := range []string{QueueTweetCreated, QueueFollowCrea
+          ted} {
+      56      if _, err := ch.QueueDeclare(q, true, false, false, false, 
+          nil); err != nil {
+      36 -      conn.Close()                                             
+      37 -      return nil, err                                          
+      57 +      return err                                               
+      58      }
+      59    }
+      60  
+      41 -  // fanout.retry.exchange → fanout.retry (con DLX a fanout.wai
+         -t.exchange)                                                    
+      61    if err := ch.ExchangeDeclare(ExchangeFanoutRetry, "direct", t
+          rue, false, false, false, nil); err != nil {
+      43 -    conn.Close()                                               
+      44 -    return nil, err                                            
+      62 +    return err                                                 
+      63    }
+      64    if _, err := ch.QueueDeclare(QueueFanoutRetry, true, false, f
+          alse, false, amqp.Table{
+      65      "x-dead-letter-exchange": ExchangeFanoutWait,
+      66    }); err != nil {
+      49 -    conn.Close()                                               
+      50 -    return nil, err                                            
+      67 +    return err                                                 
+      68    }
+      69    if err := ch.QueueBind(QueueFanoutRetry, QueueFanoutRetry, Ex
+          changeFanoutRetry, false, nil); err != nil {
+      53 -    conn.Close()                                               
+      54 -    return nil, err                                            
+      70 +    return err                                                 
+      71    }
+      72  
+      57 -  // fanout.wait.exchange → fanout.wait (TTL 30s, DLX de vuelta
+         - a fanout.retry.exchange)                                      
+      73    if err := ch.ExchangeDeclare(ExchangeFanoutWait, "direct", tr
+          ue, false, false, false, nil); err != nil {
+      59 -    conn.Close()                                               
+      60 -    return nil, err                                            
+      74 +    return err                                                 
+      75    }
+      76    if _, err := ch.QueueDeclare(QueueFanoutWait, true, false, fa
+          lse, false, amqp.Table{
+      77      "x-message-ttl":          int32(30000),
+      78      "x-dead-letter-exchange": ExchangeFanoutRetry,
+      79    }); err != nil {
+      66 -    conn.Close()                                               
+      67 -    return nil, err                                            
+      80 +    return err                                                 
+      81    }
+      82    if err := ch.QueueBind(QueueFanoutWait, QueueFanoutWait, Exch
+          angeFanoutWait, false, nil); err != nil {
+      70 -    conn.Close()                                               
+      71 -    return nil, err                                            
+      83 +    return err                                                 
+      84    }
+      85  
+      74 -  // fanout.dead — cola final para replay manual               
+      86    if _, err := ch.QueueDeclare(QueueFanoutDead, true, false, fa
+          lse, false, nil); err != nil {
+      76 -    conn.Close()                                               
+      77 -    return nil, err                                            
+      87 +    return err                                                 
+      88    }
+      89  
+      80 -  return conn, nil                                             
+      90 +  return nil                                                   
+      91  }
+
+⏺ Ahora publisher.go — cambio *amqp.Connection a channeler:
+
+⏺ Update(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Added 2 lines, removed 2 lines
+       9  )
+      10  
+      11  type Publisher struct {
+      12 -  conn *amqp.Connection                                        
+      12 +  conn channeler                                               
+      13  }
+      14  
+      15 -func NewPublisher(conn *amqp.Connection) *Publisher {          
+      15 +func NewPublisher(conn channeler) *Publisher {                 
+      16    return &Publisher{conn: conn}
+      17  }
+      18  
+
+⏺ Ahora consumer.go — cambio conn, elimino openChannel, agrego runLoop:
+
+⏺ Write(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 55 lines, removed 64 lines
+      18  const fanoutConcurrency = 100
+      19  
+      20  type Consumer struct {
+      21 -  conn           *amqp.Connection                              
+      21 +  conn           channeler                                     
+      22    followRepo     domain.FollowRepository
+      23    fanout         domain.TimelineFanout
+      24    userTweetsRepo domain.UserTweetsRepository
+     ...
+      29  }
+      30  
+      31  func NewConsumer(
+      32 -  conn *amqp.Connection,                                       
+      32 +  conn channeler,                                              
+      33    followRepo domain.FollowRepository,
+      34    fanout domain.TimelineFanout,
+      35    userTweetsRepo domain.UserTweetsRepository,
+     ...
+       56  }
+       57  
+       58  func (c *Consumer) ConsumeTweets(ctx context.Context) {
+       59 -  ch, msgs := c.openChannel(QueueTweetCreated)                
+       60 -  if ch == nil {                                              
+       61 -    return                                                    
+       62 -  }                                                           
+       63 -  defer ch.Close()                                            
+       59 +  c.runLoop(ctx, QueueTweetCreated, c.handleTweetCreated)     
+       60 +}                                                             
+       61  
+       62 +func (c *Consumer) ConsumeFollows(ctx context.Context) {      
+       63 +  c.runLoop(ctx, QueueFollowCreated, c.handleFollowCreated)   
+       64 +}                                                             
+       65 +                                                              
+       66 +func (c *Consumer) ConsumeFanoutRetry(ctx context.Context) {  
+       67 +  c.runLoop(ctx, QueueFanoutRetry, func(ctx context.Context, d
+          + amqp.Delivery) {                                             
+       68 +    acked, nacked := c.handleFanoutRetry(ctx, d)              
+       69 +    if acked {                                                
+       70 +      _ = d.Ack(false)                                        
+       71 +    } else if nacked {                                        
+       72 +      _ = d.Nack(false, false)                                
+       73 +    }                                                         
+       74 +  })                                                          
+       75 +}                                                             
+       76 +                                                              
+       77 +// runLoop consumes messages from queue, restarting the channe
+          +l on any error or drop.                                       
+       78 +func (c *Consumer) runLoop(ctx context.Context, queue string, 
+          +handler func(context.Context, amqp.Delivery)) {               
+       79    for {
+       80      select {
+       81      case <-ctx.Done():
+       82        return
+       69 -    case d, ok := <-msgs:                                     
+       70 -      if !ok {                                                
+       83 +    default:                                                  
+       84 +    }                                                         
+       85 +                                                              
+       86 +    ch, err := c.conn.Channel()                               
+       87 +    if err != nil {                                           
+       88 +      log.Printf("amqp: open channel for %s: %v, retrying in 1
+          +s", queue, err)                                               
+       89 +      select {                                                
+       90 +      case <-ctx.Done():                                      
+       91          return
+       92 +      case <-time.After(time.Second):                         
+       93        }
+       73 -      c.handleTweetCreated(ctx, d)                            
+       94 +      continue                                                
+       95      }
+       75 -  }                                                           
+       76 -}                                                             
+       96  
+       78 -func (c *Consumer) ConsumeFollows(ctx context.Context) {      
+       79 -  ch, msgs := c.openChannel(QueueFollowCreated)               
+       80 -  if ch == nil {                                              
+       81 -    return                                                    
+       82 -  }                                                           
+       83 -  defer ch.Close()                                            
+       84 -                                                              
+       85 -  for {                                                       
+       86 -    select {                                                  
+       87 -    case <-ctx.Done():                                        
+       88 -      return                                                  
+       89 -    case d, ok := <-msgs:                                     
+       90 -      if !ok {                                                
+       97 +    msgs, err := ch.Consume(queue, "", false, false, false, fa
+          +lse, nil)                                                     
+       98 +    if err != nil {                                           
+       99 +      ch.Close()                                              
+      100 +      log.Printf("amqp: consume %s: %v, retrying in 1s", queue
+          +, err)                                                        
+      101 +      select {                                                
+      102 +      case <-ctx.Done():                                      
+      103          return
+      104 +      case <-time.After(time.Second):                         
+      105        }
+       93 -      c.handleFollowCreated(ctx, d)                           
+      106 +      continue                                                
+      107      }
+       95 -  }                                                           
+       96 -}                                                             
+      108  
+       98 -func (c *Consumer) openChannel(queue string) (*amqp.Channel, <
+          --chan amqp.Delivery) {                                        
+       99 -  ch, err := c.conn.Channel()                                 
+      100 -  if err != nil {                                             
+      101 -    log.Printf("rabbitmq: open channel for %s: %v", queue, err
+          -)                                                             
+      102 -    return nil, nil                                           
+      103 -  }                                                           
+      104 -  msgs, err := ch.Consume(queue, "", false, false, false, fals
+          -e, nil)                                                       
+      105 -  if err != nil {                                             
+      109 +    notifyClosed := ch.NotifyClose(make(chan *amqp.Error, 1)) 
+      110 +  consume:                                                    
+      111 +    for {                                                     
+      112 +      select {                                                
+      113 +      case <-ctx.Done():                                      
+      114 +        ch.Close()                                            
+      115 +        return                                                
+      116 +      case <-notifyClosed:                                    
+      117 +        break consume                                         
+      118 +      case d, ok := <-msgs:                                   
+      119 +        if !ok {                                              
+      120 +          break consume                                       
+      121 +        }                                                     
+      122 +        handler(ctx, d)                                       
+      123 +      }                                                       
+      124 +    }                                                         
+      125      ch.Close()
+      107 -    log.Printf("rabbitmq: consume %s: %v", queue, err)        
+      108 -    return nil, nil                                           
+      126    }
+      110 -  return ch, msgs                                             
+      127  }
+      128  
+      129  func (c *Consumer) handleTweetCreated(ctx context.Context, d a
+           mqp.Delivery) {
+     ...
+      249    return true, false
+      250  }
+      251  
+      236 -func (c *Consumer) ConsumeFanoutRetry(ctx context.Context) {  
+      237 -  ch, msgs := c.openChannel(QueueFanoutRetry)                 
+      238 -  if ch == nil {                                              
+      239 -    return                                                    
+      240 -  }                                                           
+      241 -  defer ch.Close()                                            
+      242 -                                                              
+      243 -  for {                                                       
+      244 -    select {                                                  
+      245 -    case <-ctx.Done():                                        
+      246 -      return                                                  
+      247 -    case d, ok := <-msgs:                                     
+      248 -      if !ok {                                                
+      249 -        return                                                
+      250 -      }                                                       
+      251 -      acked, nacked := c.handleFanoutRetry(ctx, d)            
+      252 -      if acked {                                              
+      253 -        _ = d.Ack(false)                                      
+      254 -      } else if nacked {                                      
+      255 -        _ = d.Nack(false, false)                              
+      256 -      }                                                       
+      257 -    }                                                         
+      258 -  }                                                           
+      259 -}                                                             
+      260 -                                                              
+      252  func (c *Consumer) handleFollowCreated(ctx context.Context, d 
+           amqp.Delivery) {
+      253    var evt domain.FollowCreatedEvent
+      254    if err := json.Unmarshal(d.Body, &evt); err != nil {
+
+⏺ Ahora main.go — actualizo la llamada a Connect:
+
+⏺ Update(cmd/api/main.go)
+  ⎿  Added 1 line, removed 1 line
+      46    }
+      47    defer rdb.Close()
+      48  
+      49 -  amqpConn, err := rabbitmq.Connect(cfg.AMQPURL)               
+      49 +  amqpConn, err := rabbitmq.Connect(ctx, cfg.AMQPURL)          
+      50    if err != nil {
+      51      log.Fatal("rabbitmq connect:", err)
+      52    }
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ok         uala/cmd/api    1.636s
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ Todo verde. Aquí el resumen de los cambios:
+
+  ---
+  resilient_conn.go (nuevo) — el ResilientConn:
+  - Interfaz Conn que *amqp.Connection satisface implícitamente
+  - Interfaz channeler que consumer y publisher usan (solo necesitan Channel())
+  - reconnectLoop(ctx): dial → watch NotifyClose → si cae, vuelve a dial con
+  backoff exponencial hasta 30s
+  - ready chan struct{} cerrado una sola vez tras el primer dial exitoso
+
+  client.go — firma de Connect cambia a Connect(ctx, url):
+  - Arranca reconnectLoop en background
+  - Bloquea en <-rc.ready hasta tener la primera conexión (o ctx cancela)
+  - declareTopology se llama en cada dial (idempotente en AMQP)
+
+  consumer.go — conn *amqp.Connection → conn channeler:
+  - openChannel eliminado
+  - runLoop nuevo: abre canal → consume → si el canal cierra (NotifyClose),
+  cierra y vuelve a intentar desde el top del loop. El canal cierra
+  automáticamente cuando la conexión cae, lo que dispara el reinicio.
+  ResilientConn habrá reconectado para entonces.
+
+  publisher.go — conn *amqp.Connection → conn channeler
+
+✻ Brewed for 10m 37s
+
+※ recap: Implementamos reconexión automática de RabbitMQ con ResilientConn. Todos los tests pasan. El próximo gap a resolver sería la paginación del timeline o el celebrity problem.
+
+❯ /usage 
+  ⎿  Status dialog dismissed
+
+❯ el gap 3 sigue existiendo?                                                    
+
+  Read 1 file (ctrl+o to expand)
+⏺ Sí, sigue existiendo. Cada llamada a publish(), PublishFanoutRetry() y
+  PublishToDeadLetter() hace p.conn.Channel() + defer ch.Close(). Son tres rutas
+   distintas y todas abren/cierran canal por mensaje.
+
+  En este sistema el impacto es bajo porque POST /tweets y POST /follow son los
+  únicos publishers del request path, y los fanout retries son eventos de error.
+   Pero para un sistema que quiere escalar a millones de usuarios, bajo carga
+  intensa cada tweet dispara un Channel() + un Close() — dos round-trips al
+  broker.
+
+  ¿Querés que lo solucione también?
+
+❯ si                                                                            
+
+⏺ Siguiendo TDD. Primero el test rojo:
+
+⏺ Write(internal/messaging/rabbitmq/publisher_test.go)
+  ⎿  Wrote 74 lines to internal/messaging/rabbitmq/publisher_test.go
+      1 package rabbitmq
+      2 
+      3 import (
+      4         "errors"
+      5         "sync/atomic"
+      6         "testing"
+      7 
+      8         amqp "github.com/rabbitmq/amqp091-go"
+      9 )
+     … +67 lines (ctrl+o to expand)
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -run TestPublisher 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/publisher_test.go:32:3: unknown field openCh in
+      struct literal of type Publisher
+     internal/messaging/rabbitmq/publisher_test.go:32:19: undefined: amqpChannel
+     internal/messaging/rabbitmq/publisher_test.go:39:15: p.publishToExchange 
+     undefined (type *Publisher has no field or method publishToExchange)
+     internal/messaging/rabbitmq/publisher_test.go:56:3: unknown field openCh in
+      struct literal of type Publisher
+     internal/messaging/rabbitmq/publisher_test.go:56:19: undefined: amqpChannel
+     internal/messaging/rabbitmq/publisher_test.go:65:8: p.publishToExchange 
+     undefined (type *Publisher has no field or method publishToExchange)
+     internal/messaging/rabbitmq/publisher_test.go:67:14: p.publishToExchange 
+     undefined (type *Publisher has no field or method publishToExchange)
+     FAIL       uala/internal/messaging/rabbitmq [build failed]
+     … +1 line (ctrl+o to expand)
+
+⏺ Rojo confirmado. Ahora la implementación:
+
+⏺ Write(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Added 39 lines, removed 44 lines
+       3  import (
+       4    "context"
+       5    "encoding/json"
+       6 +  "sync"                                                       
+       7  
+       8    amqp "github.com/rabbitmq/amqp091-go"
+       9    "uala/internal/domain"
+      10  )
+      11  
+      12 +// amqpChannel is the subset of *amqp.Channel the publisher use
+         +s.                                                             
+      13 +type amqpChannel interface {                                   
+      14 +  Publish(exchange, key string, mandatory, immediate bool, msg 
+         +amqp.Publishing) error                                         
+      15 +  Close() error                                                
+      16 +}                                                              
+      17 +                                                               
+      18  type Publisher struct {
+      12 -  conn channeler                                               
+      19 +  openCh func() (amqpChannel, error)                           
+      20 +  mu     sync.Mutex                                            
+      21 +  ch     amqpChannel                                           
+      22  }
+      23  
+      24  func NewPublisher(conn channeler) *Publisher {
+      16 -  return &Publisher{conn: conn}                                
+      25 +  return &Publisher{                                           
+      26 +    openCh: func() (amqpChannel, error) { return conn.Channel()
+         + },                                                            
+      27 +  }                                                            
+      28  }
+      29  
+      30  func (p *Publisher) PublishTweetCreated(ctx context.Context, ev
+          t domain.TweetCreatedEvent) error {
+      20 -  return p.publish(QueueTweetCreated, evt)                     
+      31 +  return p.publishToExchange("", QueueTweetCreated, evt)       
+      32  }
+      33  
+      34  func (p *Publisher) PublishFollowCreated(ctx context.Context, e
+          vt domain.FollowCreatedEvent) error {
+      24 -  return p.publish(QueueFollowCreated, evt)                    
+      35 +  return p.publishToExchange("", QueueFollowCreated, evt)      
+      36  }
+      37  
+      38  func (p *Publisher) PublishFanoutRetry(ctx context.Context, evt
+           domain.FanoutRetryEvent) error {
+      28 -  body, err := json.Marshal(evt)                               
+      29 -  if err != nil {                                              
+      30 -    return err                                                 
+      31 -  }                                                            
+      32 -  ch, err := p.conn.Channel()                                  
+      33 -  if err != nil {                                              
+      34 -    return err                                                 
+      35 -  }                                                            
+      36 -  defer ch.Close()                                             
+      37 -  return ch.Publish(ExchangeFanoutRetry, QueueFanoutRetry, fals
+         -e, false, amqp.Publishing{                                     
+      38 -    ContentType:  "application/json",                          
+      39 -    DeliveryMode: amqp.Persistent,                             
+      40 -    Body:         body,                                        
+      41 -  })                                                           
+      39 +  return p.publishToExchange(ExchangeFanoutRetry, QueueFanoutRe
+         +try, evt)                                                      
+      40  }
+      41  
+      42  func (p *Publisher) PublishToDeadLetter(ctx context.Context, ev
+          t domain.FanoutRetryEvent) error {
+      45 -  body, err := json.Marshal(evt)                               
+      43 +  return p.publishToExchange("", QueueFanoutDead, evt)         
+      44 +}                                                              
+      45 +                                                               
+      46 +func (p *Publisher) publishToExchange(exchange, key string, pay
+         +load any) error {                                              
+      47 +  body, err := json.Marshal(payload)                           
+      48    if err != nil {
+      49      return err
+      50    }
+      49 -  ch, err := p.conn.Channel()                                  
+      50 -  if err != nil {                                              
+      51 -    return err                                                 
+      51 +                                                               
+      52 +  p.mu.Lock()                                                  
+      53 +  defer p.mu.Unlock()                                          
+      54 +                                                               
+      55 +  if p.ch == nil {                                             
+      56 +    ch, err := p.openCh()                                      
+      57 +    if err != nil {                                            
+      58 +      return err                                               
+      59 +    }                                                          
+      60 +    p.ch = ch                                                  
+      61    }
+      53 -  defer ch.Close()                                             
+      54 -  return ch.Publish("", QueueFanoutDead, false, false, amqp.Pub
+         -lishing{                                                       
+      62 +                                                               
+      63 +  if err := p.ch.Publish(exchange, key, false, false, amqp.Publ
+         +ishing{                                                        
+      64      ContentType:  "application/json",
+      65      DeliveryMode: amqp.Persistent,
+      66      Body:         body,
+      58 -  })                                                           
+      67 +  }); err != nil {                                             
+      68 +    p.ch.Close()                                               
+      69 +    p.ch = nil                                                 
+      70 +    return err                                                 
+      71 +  }                                                            
+      72 +  return nil                                                   
+      73  }
+      74  
+      75  // DeadLetterPublisher adapta Publisher para implementar domain
+          .FanoutRetryPublisher
+     ...
+      85  func (d *DeadLetterPublisher) PublishFanoutRetry(ctx context.Co
+          ntext, evt domain.FanoutRetryEvent) error {
+      86    return d.pub.PublishToDeadLetter(ctx, evt)
+      87  }
+      74 -                                                               
+      75 -func (p *Publisher) publish(queue string, payload any) error { 
+      76 -  ch, err := p.conn.Channel()                                  
+      77 -  if err != nil {                                              
+      78 -    return err                                                 
+      79 -  }                                                            
+      80 -  defer ch.Close()                                             
+      81 -                                                               
+      82 -  body, err := json.Marshal(payload)                           
+      83 -  if err != nil {                                              
+      84 -    return err                                                 
+      85 -  }                                                            
+      86 -                                                               
+      87 -  return ch.Publish("", queue, false, false, amqp.Publishing{  
+      88 -    ContentType:  "application/json",                          
+      89 -    DeliveryMode: amqp.Persistent,                             
+      90 -    Body:         body,                                        
+      91 -  })                                                           
+      92 -}                                                              
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ok         uala/cmd/api    (cached)
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ Todo verde. Lo que cambió:
+
+  publisher.go — antes: conn.Channel() + defer ch.Close() en cada publish.
+  Ahora:
+  - amqpChannel interface — permite testear sin conexión real
+  - openCh func() inyectable — la dependencia real llama a conn.Channel(), en
+  tests se inyecta un fake
+  - Canal lazy-init en primer publish, reutilizado en todos los siguientes
+  - Si Publish falla: cierra el canal roto y lo pone a nil → el próximo publish
+  abre uno nuevo
+  - sync.Mutex serializa el acceso (los channels AMQP no son goroutine-safe)
+
+  El costo por publish bajó de Channel() + Publish + Close() (3 round-trips
+  lógicos) a solo Publish (1 operación sobre canal ya abierto).
+
+✻ Churned for 1m 39s
+
+※ recap: Resolviendo los gaps de AMQP del candidato. Se implementaron reconexión automática con ResilientConn y canal persistente en el Publisher. El próximo gap pendiente es la paginación del timeline.
+
+❯ /context                                                                      
+  ⎿  Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛁ ⛁   Sonnet 4.6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-sonnet-4-6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   109k/200k tokens (55%)
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ 
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Estimated usage by category
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 6.4k tokens (3.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 7.6k tokens (3.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 247 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Skills: 2k tokens (1.0%)
+     ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Messages: 93.3k tokens (46.6%)
+                           ⛶ Free space: 57.5k (28.8%)
+                           ⛝ Autocompact buffer: 33k tokens (16.5%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__create_draft
+     ├ mcp__claude_ai_Gmail__create_label
+     ├ mcp__claude_ai_Gmail__get_thread
+     ├ mcp__claude_ai_Gmail__label_message
+     ├ mcp__claude_ai_Gmail__label_thread
+     ├ mcp__claude_ai_Gmail__list_drafts
+     ├ mcp__claude_ai_Gmail__list_labels
+     ├ mcp__claude_ai_Gmail__search_threads
+     ├ mcp__claude_ai_Gmail__unlabel_message
+     ├ mcp__claude_ai_Gmail__unlabel_thread
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     └ mcp__claude_ai_Google_Drive__complete_authentication
+
+     Custom agents · /agents
+
+     Plugin
+     └ superpowers:code-reviewer: 247 tokens
+
+     Skills · /skills
+
+     User
+     ├ golang: 49 tokens
+     ├ golang:architecture: 14 tokens
+     ├ golang:dependency-injection: 12 tokens
+     ├ golang:repository-layer: 10 tokens
+     ├ golang:handler-layer: 10 tokens
+     ├ golang:modules-tooling: 10 tokens
+     ├ golang:logging: 10 tokens
+     ├ golang:usecase-layer: 9 tokens
+     ├ golang:project-layout: 9 tokens
+     ├ golang:error-handling: 9 tokens
+     ├ golang:domain-layer: 8 tokens
+     ├ golang:performance: 8 tokens
+     ├ golang:concurrency: 8 tokens
+     ├ golang:interfaces: 7 tokens
+     ├ golang:context: 6 tokens
+     ├ golang:testing: 6 tokens
+     ├ golang:security: 6 tokens
+     └ golang:naming: 5 tokens
+
+     Plugin
+     ├ backend-best-practices: 204 tokens
+     ├ verification-before-completion: 67 tokens
+     ├ receiving-code-review: 67 tokens
+     ├ finishing-a-development-branch: 61 tokens
+     ├ using-git-worktrees: 59 tokens
+     ├ brainstorming: 56 tokens
+     ├ using-superpowers: 47 tokens
+     ├ dispatching-parallel-agents: 37 tokens
+     ├ requesting-code-review: 36 tokens
+     ├ executing-plans: 33 tokens
+     ├ writing-skills: 31 tokens
+     ├ subagent-driven-development: 31 tokens
+     ├ systematic-debugging: 31 tokens
+     ├ test-driven-development: 29 tokens
+     ├ writing-plans: 28 tokens
+     ├ superpowers:execute-plan: 22 tokens
+     ├ superpowers:write-plan: 21 tokens
+     └ superpowers:brainstorm: 21 tokens
+
+      Suggestions
+      ℹ File reads using 21.3k tokens (11%) → save ~6.4k
+        If you are re-reading files, consider referencing earlier reads. Use 
+     offset/limit for large files.

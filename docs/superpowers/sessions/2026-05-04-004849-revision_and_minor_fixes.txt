@@ -1,0 +1,1371 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ analiza esta kata, las consignas dadas al candidato estan en @Consignas.md,   
+  menciona todos los gaps que encuentres                                        
+  ⎿  Read Consignas.md (65 lines)
+
+  Searched for 3 patterns, listed 6 directories, recalled 1 memory (ctrl+o to expand)
+
+⏺ Acá está el análisis completo de gaps entre los requisitos de la consigna y lo
+   implementado:
+
+  ---
+  Gaps encontrados
+
+  Criterios de evaluación
+
+  1. Documentación high-level sin punto de entrada único
+  La consigna pide "documentación high level de la arquitectura y los
+  componentes usados." Hay architecture.svg, docs por iteración en
+  docs/iterations/, tradeoffs en docs/tradeoffs/, y el README tiene info de uso
+  — pero no existe un documento único que narrativamente explique qué hace cada
+  componente y por qué fue elegido. Un evaluador tiene que reconstruir el cuadro
+   completo navegando múltiples archivos.
+
+  2. OpenAPI desactualizado
+  docs/api/openapi.yaml tiene este comentario en el description:
+  ## Backlog
+  - Paginación en `GET /timeline`
+  Pero la paginación cursor-based ya está implementada (params after/before,
+  respuesta con next_cursor/prev_cursor). El spec no documenta ninguno de esos
+  campos. Un evaluador que lea el spec va a pensar que falta paginación.
+
+  ---
+  Setup / DevEx
+
+  3. Race condition en make up
+  up:
+      docker-compose up -d      # containers arrancando en background
+      go run ./cmd/api/...      # app arranca inmediatamente
+  Sin esperar healthchecks de Postgres/Redis/RabbitMQ, el app falla si la infra
+  no está lista. Un make up limpio desde cero probablemente crashee en el primer
+   intento.
+
+  4. AMQP_URL ausente en .env.example
+  El README documenta AMQP_URL como variable requerida y el app falla sin
+  RabbitMQ, pero .env.example no la incluye. El .env real sí la tiene, pero está
+   gitignoreado. Un dev que clone el repo y haga cp .env.example .env quedará
+  sin esa variable.
+
+  5. Sin target make test-integration
+  El Makefile solo expone make test (unit tests). Los integration tests
+  requieren INTEGRATION=1 go test ./... — esto está documentado en el README
+  pero no como target de make, que es donde la mayoría buscaría primero.
+
+  ---
+  business.txt
+
+  6. Ausente: assumption de celebrity fanout / usuarios activos
+  El sistema tiene una decisión de negocio significativa: solo los followers 
+  activos en el último ACTIVITY_TTL (default 24h) reciben el tweet en tiempo 
+  real. Un follower inactivo no verá el tweet de quienes sigue hasta que entre y
+   refreshee su timeline desde Postgres. Esto no está documentado en
+  business.txt.
+
+  ---
+  Código
+
+  7. Logging inconsistente: log.Printf vs slog
+  Todo el codebase usa slog con logging estructurado, pero
+  internal/messaging/rabbitmq/consumer.go (17 calls) y
+  internal/usecase/timeline.go usan log.Printf. Los errores del consumer — que
+  incluyen failures de fanout, reintentos, dead letters — salen sin estructura
+  JSON.
+
+  ---
+  Testing
+
+  8. El path async (fanout) no tiene ningún test de integración
+  No existe ningún test que verifique que un tweet publicado eventualmente
+  aparece en el timeline de los followers. El CLAUDE.md lo justifica ("el
+  contrato de serialización lo garantizan los tipos compartidos"), pero el
+  comportamiento observable del feature principal — timeline mostrando tweets de
+   seguidos — no está cubierto en ningún test de integración de punta a punta.
+
+  ---
+  Resumen de prioridad
+
+  ┌─────┬─────────────────────────────────┬─────────────────────────────────┐
+  │  #  │               Gap               │       Impacto evaluación        │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 1   │ Doc high-level sin punto de     │ Alto — es criterio explícito    │
+  │     │ entrada                         │                                 │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 2   │ OpenAPI desactualizado con      │ Alto — evaluador pensará que    │
+  │     │ "Backlog" stale                 │ falta paginación                │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 3   │ Race condition en make up       │ Alto — puede fallar al levantar │
+  │     │                                 │  por primera vez                │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 4   │ AMQP_URL ausente en             │ Medio                           │
+  │     │ .env.example                    │                                 │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 8   │ Sin test E2E del fanout async   │ Medio                           │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 6   │ Assumption de fanout activo no  │ Medio                           │
+  │     │ documentada                     │                                 │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 5   │ Sin make test-integration       │ Bajo                            │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 7   │ log.Printf en consumer          │ Bajo                            │
+  └─────┴─────────────────────────────────┴─────────────────────────────────┘
+
+  Los gaps 1, 2 y 3 son los que más pueden perjudicar la evaluación: el primero
+  porque es un criterio explícito, el segundo porque activamente confunde al
+  evaluador, y el tercero porque puede impedir que la kata corra en el primer
+  intento.
+
+✻ Worked for 2m 30s
+
+❯ anota los gaps en /Users/gonza/Katas/uala/docs/superpowers/gaps.md
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Write(docs/superpowers/gaps.md)
+  ⎿  Wrote 61 lines to docs/superpowers/gaps.md
+       1 # Gaps identificados
+       2 
+       3 ## Alta prioridad
+       4 
+       5 ### 1. OpenAPI desactualizado
+       6 `docs/api/openapi.yaml` tiene en el description:
+       7 ```
+       8 ## Backlog
+       9 - Paginación en `GET /timeline`
+      10 ```
+     … +94 lines (ctrl+o to expand)
+
+⏺ Listo. Los 8 gaps están anotados en docs/superpowers/gaps.md con prioridad,
+  descripción del problema, y fix concreto para cada uno. Los de alta prioridad
+  (OpenAPI stale, doc arch, race condition en make) son los que más impacto
+  tienen en la evaluación.
+
+✻ Cooked for 37s
+
+❯ /context                                                                      
+  ⎿  Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁   Sonnet 4.6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-sonnet-4-6
+     ⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶   46.1k/200k tokens (23%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 6.5k tokens (3.3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 7k tokens (3.5%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 247 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: 1.4k tokens (0.7%)
+     ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Skills: 2k tokens (1.0%)
+                           ⛁ Messages: 29.2k tokens (14.6%)
+                           ⛶ Free space: 120.7k (60.3%)
+                           ⛝ Autocompact buffer: 33k tokens (16.5%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__create_draft
+     ├ mcp__claude_ai_Gmail__create_label
+     ├ mcp__claude_ai_Gmail__get_thread
+     ├ mcp__claude_ai_Gmail__label_message
+     ├ mcp__claude_ai_Gmail__label_thread
+     ├ mcp__claude_ai_Gmail__list_drafts
+     ├ mcp__claude_ai_Gmail__list_labels
+     ├ mcp__claude_ai_Gmail__search_threads
+     ├ mcp__claude_ai_Gmail__unlabel_message
+     ├ mcp__claude_ai_Gmail__unlabel_thread
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     └ mcp__claude_ai_Google_Drive__complete_authentication
+
+     Custom agents · /agents
+
+     Plugin
+     └ superpowers:code-reviewer: 247 tokens
+
+     Memory files · /memory
+     └ CLAUDE.md: 1.4k tokens
+
+     Skills · /skills
+
+     User
+     ├ golang: 49 tokens
+     ├ golang:architecture: 14 tokens
+     ├ golang:dependency-injection: 12 tokens
+     ├ golang:repository-layer: 10 tokens
+     ├ golang:handler-layer: 10 tokens
+     ├ golang:modules-tooling: 10 tokens
+     ├ golang:logging: 10 tokens
+     ├ golang:usecase-layer: 9 tokens
+     ├ golang:project-layout: 9 tokens
+     ├ golang:error-handling: 9 tokens
+     ├ golang:domain-layer: 8 tokens
+     ├ golang:performance: 8 tokens
+     ├ golang:concurrency: 8 tokens
+     ├ golang:interfaces: 7 tokens
+     ├ golang:context: 6 tokens
+     ├ golang:testing: 6 tokens
+     ├ golang:security: 6 tokens
+     └ golang:naming: 5 tokens
+
+     Plugin
+     ├ backend-best-practices: 204 tokens
+     ├ receiving-code-review: 67 tokens
+     ├ verification-before-completion: 67 tokens
+     ├ finishing-a-development-branch: 61 tokens
+     ├ using-git-worktrees: 59 tokens
+     ├ brainstorming: 56 tokens
+     ├ using-superpowers: 47 tokens
+     ├ dispatching-parallel-agents: 37 tokens
+     ├ requesting-code-review: 36 tokens
+     ├ executing-plans: 33 tokens
+     ├ systematic-debugging: 31 tokens
+     ├ writing-skills: 31 tokens
+     ├ subagent-driven-development: 31 tokens
+     ├ test-driven-development: 29 tokens
+     ├ writing-plans: 28 tokens
+     ├ superpowers:execute-plan: 22 tokens
+     ├ superpowers:write-plan: 21 tokens
+     └ superpowers:brainstorm: 21 tokens
+
+❯ soluciona el gap 1, 3, 4, 6, 7 y 8                                            
+
+⏺ Voy a leer todos los archivos necesarios antes de editar.
+
+  Read 6 files (ctrl+o to expand)
+
+⏺ Tengo todo lo que necesito. Voy a aplicar los 6 fixes en paralelo.
+
+⏺ Update(docs/api/openapi.yaml)
+  ⎿  Removed 4 lines
+       9  
+      10      No hay sesiones ni autenticación. El usuario se identifica 
+          mediante el header `X-User-ID`
+      11      en los endpoints que lo requieren.
+      12 -                                                               
+      13 -    ## Backlog                                                 
+      14 -                                                               
+      15 -    - Paginación en `GET /timeline`                            
+      12    version: 1.0.0
+      13  
+      14  servers:
+
+⏺ Update(docs/api/openapi.yaml)
+  ⎿  Added 23 lines, removed 1 line
+      160      get:
+      161        tags: [Timeline]
+      162        summary: Ver timeline
+      163 -      description: Devuelve los tweets de los usuarios seguido
+          -s, ordenados por fecha descendente. Devuelve array vacío si el
+          - usuario no sigue a nadie.                                    
+      163 +      description: |                                          
+      164 +        Devuelve los tweets de los usuarios seguidos, ordenado
+          +s por fecha descendente.                                      
+      165 +        Devuelve array vacío si el usuario no sigue a nadie.  
+      166 +                                                              
+      167 +        Soporta paginación cursor-based mediante los parámetro
+          +s `after` y `before` (mutuamente excluyentes).                
+      168 +        La respuesta incluye `next_cursor` (ID del tweet más a
+          +ntiguo de la página) y `prev_cursor`                          
+      169 +        (ID del tweet más reciente) para navegar hacia atrás y
+          + hacia adelante respectivamente.                              
+      170        parameters:
+      171          - $ref: '#/components/parameters/UserID'
+      172 +        - name: after                                         
+      173 +          in: query                                           
+      174 +          required: false                                     
+      175 +          description: ID del tweet a partir del cual paginar 
+          +hacia atrás (tweets más antiguos). Mutuamente exclusivo con `b
+          +efore`.                                                       
+      176 +          schema:                                             
+      177 +            type: string                                      
+      178 +            format: uuid                                      
+      179 +        - name: before                                        
+      180 +          in: query                                           
+      181 +          required: false                                     
+      182 +          description: ID del tweet a partir del cual paginar 
+          +hacia adelante (tweets más recientes). Mutuamente exclusivo co
+          +n `after`.                                                    
+      183 +          schema:                                             
+      184 +            type: string                                      
+      185 +            format: uuid                                      
+      186        responses:
+      187          '200':
+      188            description: Timeline del usuario
+     ...
+      197                      username: "gonzalo"
+      198                      content: "Hola mundo"
+      199                      created_at: "2026-04-27T12:00:00Z"
+      200 +                next_cursor: "661f9511-f3ac-52e5-b827-55776655
+          +1111"                                                         
+      201 +                prev_cursor: "771f9511-f3ac-52e5-b827-55776655
+          +1222"                                                         
+      202          '404':
+      203            description: Usuario no encontrado
+      204            content:
+
+⏺ Update(docs/api/openapi.yaml)
+  ⎿  Added 10 lines
+      259            type: array
+      260            items:
+      261              $ref: '#/components/schemas/TweetItem'
+      262 +        next_cursor:                                          
+      263 +          type: string                                        
+      264 +          format: uuid                                        
+      265 +          nullable: true                                      
+      266 +          description: ID del tweet más antiguo de la página. 
+          +Usar como `after` para obtener la siguiente página.           
+      267 +        prev_cursor:                                          
+      268 +          type: string                                        
+      269 +          format: uuid                                        
+      270 +          nullable: true                                      
+      271 +          description: ID del tweet más reciente de la página.
+          + Usar como `before` para obtener la página anterior.          
+      272  
+      273      TweetItem:
+      274        type: object
+
+⏺ Update(Makefile)
+  ⎿  Added 2 lines, removed 2 lines
+      1 -.PHONY: up down run migrate test                                
+      1 +.PHONY: up down run migrate test test-integration               
+      2  
+      3  up:
+      4 -  docker-compose up -d                                          
+      4 +  docker-compose up -d --wait                                   
+      5    go run ./cmd/api/...
+      6  
+      7  down:
+
+⏺ Update(Makefile)  ⎿  Added 3 lines
+      15  
+      16  test:
+      17    go test ./...
+      18 +                                                               
+      19 +test-integration:                                              
+      20 +  INTEGRATION=1 go test ./...                                  
+
+⏺ Update(.env.example)
+  ⎿  Added 2 lines
+       3  POSTGRES_DB=uala
+       4  DATABASE_URL=postgres://uala:uala@localhost:5432/uala
+       5  REDIS_URL=redis://localhost:6379/0
+       6 +AMQP_URL=amqp://guest:guest@localhost:5672/                    
+       7  PORT=8080
+       8  TIMELINE_LIMIT=500
+       9  FOLLOW_BACKFILL_LIMIT=20
+      10 +ACTIVITY_TTL=24h                                               
+
+⏺ Update(business.txt)
+  ⎿  Added 13 lines
+      19  
+      20  6. Los usernames son únicos. Intentar crear un usuario con un u
+          sername
+      21     ya existente devuelve 409.
+      22 +                                                               
+      23 +7. El fanout de tweets es selectivo: solo los followers que est
+         +uvieron                                                        
+      24 +   activos en la última ventana de ACTIVITY_TTL (default 24h) r
+         +eciben el                                                      
+      25 +   tweet en su timeline en tiempo real (fan-out on write). Un f
+         +ollower                                                        
+      26 +   inactivo no recibe el push; cuando vuelva a consultar su tim
+         +eline, los                                                     
+      27 +   tweets se recuperan directamente desde Postgres (fan-out on 
+         +read como                                                      
+      28 +   fallback). Esto resuelve el "celebrity problem": un usuario 
+         +con millones                                                   
+      29 +   de followers no genera millones de escrituras si la mayoría 
+         +son inactivos.                                                 
+      30 +                                                               
+      31 +8. La actividad de un usuario se actualiza cada vez que consult
+         +a su timeline                                                  
+      32 +   (GET /timeline). Este evento es asíncrono (vía RabbitMQ) y u
+         +sa una guarda                                                  
+      33 +   monótona: solo se actualiza last_active si el timestamp reci
+         +bido es más                                                    
+      34 +   nuevo que el almacenado.                                    
+
+⏺ Ahora el consumer y timeline.go con slog:
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 1 line, removed 1 line
+       4    "context"
+       5    "encoding/json"
+       6    "errors"
+       7 -  "log"                                                        
+       7 +  "log/slog"                                                   
+       8    "sync/atomic"
+       9    "time"
+      10  
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 2 lines, removed 2 lines
+      110  
+      111      ch, err := c.conn.Channel()
+      112      if err != nil {
+      113 -      log.Printf("amqp: open channel for %s: %v, retrying in 1
+          -s", queue, err)                                               
+      113 +      slog.ErrorContext(ctx, "amqp: open channel", "queue", qu
+          +eue, "err", err)                                              
+      114        select {
+      115        case <-ctx.Done():
+      116          return
+     ...
+      122      msgs, err := ch.Consume(queue, "", false, false, false, fa
+           lse, nil)
+      123      if err != nil {
+      124        ch.Close()
+      125 -      log.Printf("amqp: consume %s: %v, retrying in 1s", queue
+          -, err)                                                        
+      125 +      slog.ErrorContext(ctx, "amqp: consume", "queue", queue, 
+          +"err", err)                                                   
+      126        select {
+      127        case <-ctx.Done():
+      128          return
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 3 lines, removed 3 lines
+      154  func (c *Consumer) handleTweetCreated(ctx context.Context, d a
+           mqp.Delivery) {
+      155    var evt domain.TweetCreatedEvent
+      156    if err := json.Unmarshal(d.Body, &evt); err != nil {
+      157 -    log.Printf("rabbitmq: unmarshal tweet event: %v", err)    
+      157 +    slog.ErrorContext(ctx, "rabbitmq: unmarshal tweet event", 
+          +"err", err)                                                   
+      158      metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetC
+           reated).Inc()
+      159      _ = d.Nack(false, false)
+      160      return
+     ...
+      164    activeSince := time.Now().Add(-c.activityTTL)
+      165    followers, err := c.followRepo.GetActiveFollowers(ctx, evt.U
+           serID, activeSince)
+      166    if err != nil {
+      167 -    log.Printf("rabbitmq: get active followers for %s: %v", ev
+          -t.UserID, err)                                                
+      167 +    slog.ErrorContext(ctx, "rabbitmq: get active followers", "
+          +user_id", evt.UserID, "err", err)                             
+      168      metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetC
+           reated).Inc()
+      169      _ = d.Nack(false, true)
+      170      return
+      171    }
+      172  
+      173    if err := c.fanoutTweet(ctx, evt, followers); err != nil {
+      174 -    log.Printf("rabbitmq: all fanout writes failed for tweet %
+          -s: %v", evt.TweetID, err)                                     
+      174 +    slog.ErrorContext(ctx, "rabbitmq: all fanout writes failed
+          +", "tweet_id", evt.TweetID, "err", err)                       
+      175      metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetC
+           reated).Inc()
+      176      _ = d.Nack(false, true)
+      177      return
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 2 lines, removed 2 lines
+      210      g.Go(func() error {
+      211        defer func() { <-sem }()
+      212        if err := c.fanout.AppendTweet(gctx, fid, item, ttl); er
+           r != nil {
+      213 -        log.Printf("rabbitmq: fanout tweet to %s: %v", fid, er
+          -r)                                                            
+      213 +        slog.ErrorContext(gctx, "rabbitmq: fanout tweet", "fol
+          +lower_id", fid, "err", err)                                   
+      214          if c.retryPublisher != nil {
+      215            if pubErr := c.retryPublisher.PublishFanoutRetry(ctx
+           , domain.FanoutRetryEvent{
+      216              FollowerID: fid,
+      217              Tweet:      item,
+      218            }); pubErr != nil {
+      219 -            log.Printf("rabbitmq: publish retry for %s: %v", f
+          -id, pubErr)                                                   
+      219 +            slog.ErrorContext(ctx, "rabbitmq: publish retry", 
+          +"follower_id", fid, "err", pubErr)                            
+      220              return nil
+      221            }
+      222            handled.Add(1)
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 4 lines, removed 4 lines
+      260  func (c *Consumer) handleFanoutRetry(ctx context.Context, d am
+           qp.Delivery) (acked, nacked bool) {
+      261    var evt domain.FanoutRetryEvent
+      262    if err := json.Unmarshal(d.Body, &evt); err != nil {
+      263 -    log.Printf("rabbitmq: unmarshal fanout retry: %v", err)   
+      263 +    slog.ErrorContext(ctx, "rabbitmq: unmarshal fanout retry",
+          + "err", err)                                                  
+      264      return false, true
+      265    }
+      266  
+      267    if xDeathCount(d) >= maxFanoutRetries {
+      268      if c.deadLetterPub != nil {
+      269        if err := c.deadLetterPub.PublishFanoutRetry(ctx, evt); 
+           err != nil {
+      270 -        log.Printf("rabbitmq: publish dead letter for %s: %v",
+          - evt.FollowerID, err)                                         
+      270 +        slog.ErrorContext(ctx, "rabbitmq: publish dead letter"
+          +, "follower_id", evt.FollowerID, "err", err)                  
+      271        }
+      272      }
+      273      metrics.FanoutDeadLetterTotal.WithLabelValues(evt.Follower
+           ID.String()).Inc()
+      274 -    log.Printf("rabbitmq: fanout dead letter follower=%s tweet
+          -=%s", evt.FollowerID, evt.Tweet.ID)                           
+      274 +    slog.WarnContext(ctx, "rabbitmq: fanout dead letter", "fol
+          +lower_id", evt.FollowerID, "tweet_id", evt.Tweet.ID)          
+      275      return true, false
+      276    }
+      277  
+      278    if err := c.fanout.AppendTweet(ctx, evt.FollowerID, evt.Twee
+           t, c.activityTTL); err != nil {
+      279 -    log.Printf("rabbitmq: retry AppendTweet for %s: %v", evt.F
+          -ollowerID, err)                                               
+      279 +    slog.ErrorContext(ctx, "rabbitmq: retry AppendTweet", "fol
+          +lower_id", evt.FollowerID, "err", err)                        
+      280      return false, true
+      281    }
+      282    return true, false
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 2 lines, removed 2 lines
+      285  func (c *Consumer) handleUserActivity(ctx context.Context, d a
+           mqp.Delivery) (acked, nacked bool) {
+      286    var evt domain.UserActivityEvent
+      287    if err := json.Unmarshal(d.Body, &evt); err != nil {
+      288 -    log.Printf("rabbitmq: unmarshal user activity: %v", err)  
+      288 +    slog.ErrorContext(ctx, "rabbitmq: unmarshal user activity"
+          +, "err", err)                                                 
+      289      return false, true
+      290    }
+      291    if err := c.userActivityRepo.UpdateLastActive(ctx, evt.UserI
+           D, evt.LastActive); err != nil {
+      292 -    log.Printf("rabbitmq: update last active for %s: %v", evt.
+          -UserID, err)                                                  
+      292 +    slog.ErrorContext(ctx, "rabbitmq: update last active", "us
+          +er_id", evt.UserID, "err", err)                               
+      293      return false, true
+      294    }
+      295    return true, false
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 3 lines, removed 3 lines
+      298  func (c *Consumer) handleFollowCreated(ctx context.Context, d 
+           amqp.Delivery) {
+      299    var evt domain.FollowCreatedEvent
+      300    if err := json.Unmarshal(d.Body, &evt); err != nil {
+      301 -    log.Printf("rabbitmq: unmarshal follow event: %v", err)   
+      301 +    slog.ErrorContext(ctx, "rabbitmq: unmarshal follow event",
+          + "err", err)                                                  
+      302      metrics.RabbitMQMessagesFailed.WithLabelValues(QueueFollow
+           Created).Inc()
+      303      _ = d.Nack(false, false)
+      304      return
+     ...
+      306  
+      307    tweets, err := c.userTweetsRepo.GetLatestByUser(ctx, evt.Fol
+           loweeID, c.backfillLimit)
+      308    if err != nil {
+      309 -    log.Printf("rabbitmq: get tweets for backfill %s: %v", evt
+          -.FolloweeID, err)                                             
+      309 +    slog.ErrorContext(ctx, "rabbitmq: get tweets for backfill"
+          +, "followee_id", evt.FolloweeID, "err", err)                  
+      310      metrics.RabbitMQMessagesFailed.WithLabelValues(QueueFollow
+           Created).Inc()
+      311      _ = d.Nack(false, true)
+      312      return
+     ...
+      314  
+      315    for _, tweet := range tweets {
+      316      if err := c.fanout.AppendTweet(ctx, evt.FollowerID, tweet,
+            c.activityTTL); err != nil {
+      317 -      log.Printf("rabbitmq: backfill tweet to %s: %v", evt.Fol
+          -lowerID, err)                                                 
+      317 +      slog.ErrorContext(ctx, "rabbitmq: backfill tweet", "foll
+          +ower_id", evt.FollowerID, "err", err)                         
+      318      }
+      319    }
+      320  
+
+⏺ Ahora timeline.go:
+
+⏺ Update(internal/usecase/timeline.go)
+  ⎿  Added 1 line, removed 1 line
+      2  
+      3  import (
+      4    "context"
+      5 -  "log"                                                         
+      5 +  "log/slog"                                                    
+      6    "time"
+      7  
+      8    "github.com/google/uuid"
+
+⏺ Update(internal/usecase/timeline.go)
+  ⎿  Added 1 line, removed 1 line
+      41      evt := domain.UserActivityEvent{UserID: userID, LastActive:
+           time.Now()}
+      42      go func() {
+      43        if pubErr := uc.activityPub.PublishUserActivity(context.B
+          ackground(), evt); pubErr != nil {
+      44 -        log.Printf("usecase: publish user activity for %s: %v",
+         - userID, pubErr)                                               
+      44 +        slog.Error("usecase: publish user activity", "user_id",
+         + userID, "err", pubErr)                                        
+      45        }
+      46      }()
+      47    }
+
+⏺ Verifico que compila:
+
+⏺ Bash(go build ./...)
+  ⎿  (No output)
+
+⏺ Compila limpio. Resumen de lo aplicado:
+
+  ┌─────────────────────┬───────────────────────────────────────────────────┐
+  │         Gap         │                      Cambio                       │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │                     │ Eliminado el bloque ## Backlog, documentados      │
+  │ 1 OpenAPI stale     │ ?after/?before como query params, y               │
+  │                     │ next_cursor/prev_cursor en el schema              │
+  │                     │ TimelineResponse                                  │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ 3 Race condition    │ docker-compose up -d → docker-compose up -d       │
+  │ make up             │ --wait (espera los healthchecks antes de arrancar │
+  │                     │  el app)                                          │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ 4 AMQP_URL en       │ Agregados AMQP_URL y ACTIVITY_TTL (también estaba │
+  │ .env.example        │  ausente)                                         │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ 6 Assumption fanout │ Agregadas assumptions 7 y 8 explicando el fanout  │
+  │  en business.txt    │ selectivo, la ventana de actividad y la guarda    │
+  │                     │ monótona                                          │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │                     │ consumer.go (17 calls) y timeline.go migrados a   │
+  │ 7 log.Printf → slog │ slog.ErrorContext/slog.WarnContext con campos     │
+  │                     │ estructurados                                     │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ 8 make              │ Agregado el target al Makefile                    │
+  │ test-integration    │                                                   │
+  └─────────────────────┴───────────────────────────────────────────────────┘
+
+✻ Worked for 2m 8s
+
+❯ /context                                                                      
+  ⎿  Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁   Sonnet 4.6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-sonnet-4-6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   65.7k/200k tokens (33%)
+     ⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 6.5k tokens (3.3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 7k tokens (3.5%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 247 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: 1.4k tokens (0.7%)
+     ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Skills: 2k tokens (1.0%)
+                           ⛁ Messages: 49k tokens (24.5%)
+                           ⛶ Free space: 100.8k (50.4%)
+                           ⛝ Autocompact buffer: 33k tokens (16.5%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__create_draft
+     ├ mcp__claude_ai_Gmail__create_label
+     ├ mcp__claude_ai_Gmail__get_thread
+     ├ mcp__claude_ai_Gmail__label_message
+     ├ mcp__claude_ai_Gmail__label_thread
+     ├ mcp__claude_ai_Gmail__list_drafts
+     ├ mcp__claude_ai_Gmail__list_labels
+     ├ mcp__claude_ai_Gmail__search_threads
+     ├ mcp__claude_ai_Gmail__unlabel_message
+     ├ mcp__claude_ai_Gmail__unlabel_thread
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     └ mcp__claude_ai_Google_Drive__complete_authentication
+
+     Custom agents · /agents
+
+     Plugin
+     └ superpowers:code-reviewer: 247 tokens
+
+     Memory files · /memory
+     └ CLAUDE.md: 1.4k tokens
+
+     Skills · /skills
+
+     User
+     ├ golang: 49 tokens
+     ├ golang:architecture: 14 tokens
+     ├ golang:dependency-injection: 12 tokens
+     ├ golang:repository-layer: 10 tokens
+     ├ golang:handler-layer: 10 tokens
+     ├ golang:modules-tooling: 10 tokens
+     ├ golang:logging: 10 tokens
+     ├ golang:usecase-layer: 9 tokens
+     ├ golang:project-layout: 9 tokens
+     ├ golang:error-handling: 9 tokens
+     ├ golang:domain-layer: 8 tokens
+     ├ golang:performance: 8 tokens
+     ├ golang:concurrency: 8 tokens
+     ├ golang:interfaces: 7 tokens
+     ├ golang:context: 6 tokens
+     ├ golang:testing: 6 tokens
+     ├ golang:security: 6 tokens
+     └ golang:naming: 5 tokens
+
+     Plugin
+     ├ backend-best-practices: 204 tokens
+     ├ receiving-code-review: 67 tokens
+     ├ verification-before-completion: 67 tokens
+     ├ finishing-a-development-branch: 61 tokens
+     ├ using-git-worktrees: 59 tokens
+     ├ brainstorming: 56 tokens
+     ├ using-superpowers: 47 tokens
+     ├ dispatching-parallel-agents: 37 tokens
+     ├ requesting-code-review: 36 tokens
+     ├ executing-plans: 33 tokens
+     ├ systematic-debugging: 31 tokens
+     ├ writing-skills: 31 tokens
+     ├ subagent-driven-development: 31 tokens
+     ├ test-driven-development: 29 tokens
+     ├ writing-plans: 28 tokens
+     ├ superpowers:execute-plan: 22 tokens
+     ├ superpowers:write-plan: 21 tokens
+     └ superpowers:brainstorm: 21 tokens
+
+❯ para el gap 2, estoy usando como fuente de documentacion github wiki, puede   
+  ser que este incompleta, si ese es el caso, quiero que la completes con los   
+  documentos de @docs/tradeoffs/ @docs/decisions.md y el estado final del       
+  proyecto, consulta con migo como estructurar las paginas                      
+  ⎿  Listed directory docs/tradeoffs/
+  ⎿  Read docs/decisions.md (43 lines)
+
+⏺ Primero leo todo el material disponible para proponer una estructura
+  informada.
+
+  Read 4 files (ctrl+o to expand)
+
+⏺ Con ese material tengo suficiente para proponer. Antes de escribir nada, te
+  presento dos opciones de estructura:
+
+  ---
+  Opción A — Wiki minimalista (3 páginas)
+
+  ┌───────────────┬─────────────────────────────────────────────────────────┐
+  │    Página     │                        Contenido                        │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Home          │ Descripción del sistema + links a las otras páginas     │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │               │ Diagrama + descripción de cada componente (Postgres,    │
+  │ Architecture  │ Redis, RabbitMQ, Go app) + los dos flujos principales   │
+  │               │ (tweet creation, timeline read)                         │
+  ├───────────────┼─────────────────────────────────────────────────────────┤
+  │ Design        │ Consolida las 3 docs de tradeoffs + ADR-001 en una sola │
+  │ Decisions     │  página                                                 │
+  └───────────────┴─────────────────────────────────────────────────────────┘
+
+  Pro: un evaluador llega a la Home y en 2 clicks tiene todo el contexto.
+  Contra: la página de decisions queda larga (~4 secciones).
+
+  ---
+  Opción B — Wiki por tema (5 páginas)
+
+  ┌────────────────────┬────────────────────────────────────────────────────┐
+  │       Página       │                       Fuente                       │
+  ├────────────────────┼────────────────────────────────────────────────────┤
+  │ Home               │ Descripción + índice con links                     │
+  ├────────────────────┼────────────────────────────────────────────────────┤
+  │ Architecture       │ Diagrama + componentes + flujos                    │
+  ├────────────────────┼────────────────────────────────────────────────────┤
+  │ Celebrity Fanout   │ tradeoffs/celebrity-fanout-strategy.md             │
+  ├────────────────────┼────────────────────────────────────────────────────┤
+  │ Redis Timeline     │ tradeoffs/redis-timeline-storage.md                │
+  │ Storage            │                                                    │
+  ├────────────────────┼────────────────────────────────────────────────────┤
+  │ ADRs               │ decisions.md +                                     │
+  │                    │ tradeoffs/integration-testing-strategy.md          │
+  └────────────────────┴────────────────────────────────────────────────────┘
+
+  Pro: cada tema es buscable y linkeable individualmente.
+  Contra: la wiki queda con más páginas que contenido real.
+
+  ---
+  Mi recomendación
+
+  Opción A, con una variante: la página Architecture incluye un bloque de
+  "Decisiones de diseño clave" al final (un párrafo por decisión con link a la
+  sección de la página Decisions). Así la Home es el punto de entrada,
+  Architecture da el cuadro completo, y Decisions tiene el detalle.
+
+  ¿Preferís A, B, o alguna variante? ¿Hay páginas ya creadas en la wiki que
+  tenga que respetar o completar?
+✻ Baked for 32s
+
+❯ a                                                                             
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Bash(gh api repos/G00nza/uala/wiki/pages 2>/dev/null || gh api
+      repos/G00nza/uala/pages 2>/dev/null || echo "trying wiki sidebar" && gh
+      api "repos/G00nza/uala/git/tre…)
+  ⎿  {
+       "message": "Not Found",
+       "documentation_url": "https://docs.github.com/rest",
+     … +22 lines (ctrl+o to expand)
+
+⏺ Bash(cd /tmp && git clone https://github.com/G00nza/uala.wiki.git 2>&1 | tail
+      -5 && ls /tmp/uala.wiki/)
+  ⎿  Cloning into 'uala.wiki'...
+     Arquitectura.md
+     Decisiones-de-diseño.md
+     … +2 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /Users/gonza/Katas/uala
+
+  Read 4 files (ctrl+o to expand)
+
+⏺ La wiki ya tiene 4 páginas. Analizando el estado actual:
+
+  - Home — completa, no necesita cambios
+  - Observabilidad — completa, no necesita cambios
+  - Arquitectura — falta: celebrity fanout, cursor pagination, Redis
+  dual-structure, retry/DLQ
+  - Decisiones de diseño — ADR-002 dice literalmente "Para esta kata no aplica"
+  sobre celebrities, pero el celebrity fanout está implementado; faltan los
+  trade-offs de Redis storage e integration testing strategy
+
+  Voy a actualizar esas dos páginas y hacer push.
+
+⏺ Write(/tmp/uala.wiki/Arquitectura.md)
+  ⎿  Added 36 lines, removed 16 lines
+      22  └── infra/           ← carga de configuración desde variables d
+          e entorno
+      23  ```
+      24  
+      25 +## Componentes de infraestructura                              
+      26 +                                                               
+      27 +| Componente | Rol |                                           
+      28 +|---|---|                                                      
+      29 +| **PostgreSQL** | Fuente de verdad. Almacena usuarios, tweets 
+         +y follows. También mantiene `last_active` por usuario para el f
+         +anout selectivo. |                                             
+      30 +| **Redis** | Cache del timeline por usuario. Dos estructuras p
+         +or usuario: un Sorted Set con IDs ordenados por timestamp y un 
+         +Hash con el JSON de cada tweet. Las keys expiran naturalmente c
+         +uando el usuario pasa a inactivo. |                            
+      31 +| **RabbitMQ** | Desacopla la escritura del tweet del fanout a 
+         +seguidores. El producer publica y responde 201 inmediatamente; 
+         +el consumer procesa el fanout de forma asíncrona. |            
+      32 +| **Prometheus + Grafana** | Observabilidad: latencia HTTP, cac
+         +he hit rate, profundidad de queues. Ver [Observabilidad](Observ
+         +abilidad). |                                                   
+      33 +                                                               
+      34  ## Flujos principales
+      35  
+      36  ### Publicar tweet
+      37  
+      29 -1. El handler recibe `POST /tweets` y delega al `TweetUseCase`.
+      30 -2. El use case persiste el tweet en PostgreSQL.                
+      31 -3. Publica un evento `tweet.created` en RabbitMQ.              
+      32 -4. El consumer lo recibe de forma asíncrona y hace **fanout**: 
+         -escribe el tweet en el timeline Redis de cada seguidor del auto
+         -r.                                                             
+      38 +1. `POST /tweets` → el use case persiste el tweet en PostgreSQL
+         + → publica `TweetCreatedEvent` en RabbitMQ → responde 201.     
+      39 +2. El consumer recibe el evento → consulta `GetActiveFollowers`
+         + (JOIN con `users.last_active`) → hace **fanout**: escribe el t
+         +weet en el timeline Redis de cada seguidor activo.             
+      40 +3. El TTL de cada key Redis se calcula como `ACTIVITY_TTL - tim
+         +e.Since(follower.LastActive)`, de modo que las keys de usuarios
+         + inactivos expiran antes.                                      
+      41  
+      42  ### Seguir usuario
+      43  
+      36 -1. El handler recibe `POST /follow` y delega al `FollowUseCase`
+         -.                                                              
+      37 -2. El use case persiste la relación en PostgreSQL.             
+      38 -3. Publica un evento `follow.created` en RabbitMQ.             
+      39 -4. El consumer hace **backfill**: copia los últimos `FOLLOW_BAC
+         -KFILL_LIMIT` tweets del autor en el timeline Redis del nuevo se
+         -guidor.                                                        
+      44 +1. `POST /follow` → el use case persiste la relación en Postgre
+         +SQL → publica `FollowCreatedEvent` en RabbitMQ → responde 201. 
+      45 +2. El consumer recibe el evento → recupera los últimos `FOLLOW_
+         +BACKFILL_LIMIT` tweets del autor → los escribe en el timeline R
+         +edis del nuevo seguidor (**backfill**).                        
+      46  
+      47  ### Leer timeline
+      48  
+      43 -1. El handler recibe `GET /timeline` y delega al `TimelineUseCa
+         -se`.                                                           
+      44 -2. El use case consulta Redis. Si hay datos (**cache hit**), de
+         -vuelve directo en O(1).                                        
+      45 -3. Si Redis no tiene datos (**cache miss**), hace fallback a Po
+         -stgreSQL y popula Redis para la próxima lectura.               
+      49 +1. `GET /timeline` → el use case consulta Redis. **Cache hit**:
+         + devuelve en O(1). **Cache miss**: fallback a PostgreSQL, popul
+         +a Redis para lecturas futuras.                                 
+      50 +2. Soporta paginación cursor-based con los parámetros `?after=<
+         +tweet_id>` y `?before=<tweet_id>`. La respuesta incluye `next_c
+         +ursor` y `prev_cursor`.                                        
+      51 +3. Cada lectura publica un `UserActivityEvent` de forma asíncro
+         +na. El consumer actualiza `users.last_active` en PostgreSQL (gu
+         +arda monótona: solo actualiza si el timestamp es más nuevo).   
+      52  
+      53  ### Crear usuario
+      54  
+      49 -1. El handler recibe `POST /users` y delega al `UserUseCase`.  
+      50 -2. El use case persiste el usuario en PostgreSQL.              
+      55 +1. `POST /users` → el use case persiste el usuario en PostgreSQ
+         +L.                                                             
+      56  
+      52 -## Decisión de diseño: fanout on write                         
+      57 +## Fanout selectivo (celebrity problem)                        
+      58  
+      54 -El timeline se construye en el momento de escritura (fanout), n
+         -o en el de lectura. Esto hace que `GET /timeline` sea siempre O
+         -(1) desde Redis, independientemente de cuántos usuarios siga el
+         - lector. El costo del fanout es asíncrono y se distribuye en Ra
+         -bbitMQ.                                                        
+      59 +El fanout no escribe en el timeline de **todos** los seguidores
+         +, sino solo en los que estuvieron activos en la última ventana 
+         +de `ACTIVITY_TTL` (default 24h). Un seguidor inactivo no recibe
+         + el push; cuando vuelva a leer su timeline, el cache miss hace 
+         +fallback a PostgreSQL.                                         
+      60  
+      56 -La contrapartida es que usuarios con muchos seguidores generan 
+         -más trabajo al publicar. Para esta kata el trade-off favorece l
+         -a lectura, que es el camino crítico a escala.                  
+      61 +Esto resuelve el problema de los usuarios con millones de segui
+         +dores: en lugar de 10M escrituras Redis por tweet, el fanout op
+         +era solo sobre los seguidores que realmente van a leer.        
+      62 +                                                               
+      63 +## Fanout retry y DLQ                                          
+      64 +                                                               
+      65 +Si una escritura a Redis falla durante el fanout, el consumer p
+         +ublica un `FanoutRetryEvent` en la queue `fanout.retry`. El men
+         +saje espera 30 segundos en `fanout.wait` (dead-letter exchange)
+         + antes de volver a `fanout.retry`. Después de 10 reintentos sin
+         + éxito, el mensaje pasa a `fanout.dead` para inspección manual.
+      66 +                                                               
+      67 +## Redis: estructura del timeline                              
+      68 +                                                               
+      69 +Cada usuario tiene dos keys:                                   
+      70 +                                                               
+      71 +```                                                            
+      72 +timeline:{user_id}       →  Sorted Set  (score: unix timestamp,
+         + member: tweet_id)                                             
+      73 +timeline:data:{user_id}  →  Hash        (field: tweet_id, value
+         +: JSON del tweet)                                              
+      74 +```                                                            
+      75 +                                                               
+      76 +La lectura combina `ZREVRANGE` para obtener los IDs ordenados y
+         + `HMGET` para el contenido. Esta separación permite que el fano
+         +ut use `HSetNX` (idempotente): si el tweet ya existe en el hash
+         + del usuario, no se reescribe el payload completo.             
+
+⏺ Write(/tmp/uala.wiki/Decisiones-de-diseño.md)
+  ⎿  Added 62 lines, removed 12 lines
+       33  
+       34  ---
+       35  
+       36 -## ADR-002: Redis como cache de timeline (fanout on write)    
+       36 +## ADR-002: Fanout on write con fanout selectivo por actividad
+       37  
+       38  **Estado:** Aceptado
+       39  
+       40  ### Contexto
+       41  
+       42 -El sistema debe estar optimizado para lecturas. El timeline de
+          - un usuario puede requerir un JOIN entre follows, tweets y usu
+          -arios en PostgreSQL, con ordenamiento y paginación. A escala, 
+          -esto es caro.                                                 
+       42 +El sistema debe estar optimizado para lecturas. El timeline re
+          +quiere un JOIN entre follows, tweets y usuarios en PostgreSQL,
+          + con ordenamiento y paginación. A escala, hacerlo en cada lect
+          +ura es caro.                                                  
+       43  
+       44 +El fanout ingenuo (escribir en el timeline de todos los seguid
+          +ores al publicar un tweet) resuelve el read path pero introduc
+          +e el **celebrity problem**: un usuario con 10M seguidores gene
+          +ra 10M escrituras Redis por cada tweet publicado.             
+       45 +                                                              
+       46  ### Alternativas evaluadas
+       47  
+       48  | Opción | Descripción | Trade-off |
+       49  |---|---|---|
+       48 -| **Fanout on write** (elegida) | Al publicar, se escribe en e
+          -l timeline Redis de cada seguidor | Escritura más costosa, lec
+          -tura O(1) |                                                   
+       49 -| Fanout on read | Al leer, se construye el timeline en el mom
+          -ento | Lectura costosa, escritura simple |                    
+       50 -| Pull híbrido | Combina ambas según cantidad de seguidores | 
+          -Mayor complejidad operativa |                                 
+       50 +| **Fanout on write selectivo** (elegida) | Al publicar, fanou
+          +t solo a seguidores activos en la última ventana de `ACTIVITY_
+          +TTL` | Lectura O(1); fanout proporcional a seguidores activos,
+          + no totales |                                                 
+       51 +| Fanout on write completo | Fanout a todos los seguidores | L
+          +ectura O(1); costoso para celebrities |                       
+       52 +| Fanout on read | Al leer, se construye el timeline en el mom
+          +ento | Lectura costosa; escritura simple |                    
+       53 +| Hybrid push/pull | Fanout completo para usuarios normales; c
+          +elebrities solo a activos, con merge en el read path | Mayor c
+          +omplejidad operativa en el read path |                        
+       54  
+       55  ### Decisión
+       56  
+       54 -Fanout on write via RabbitMQ. Al publicar un tweet, se emite u
+          -n evento `tweet.created` que el consumer procesa de forma asín
+          -crona para hacer el fanout. `GET /timeline` lee directamente d
+          -e Redis.                                                      
+       57 +**Fanout on write, filtrado por actividad.** Al publicar un tw
+          +eet, se emite `TweetCreatedEvent` vía RabbitMQ. El consumer co
+          +nsulta `GetActiveFollowers` — un JOIN en PostgreSQL que retorn
+          +a solo los seguidores con `last_active` dentro de la ventana d
+          +e `ACTIVITY_TTL` (default 24h) — y escribe en sus timelines Re
+          +dis.                                                          
+       58  
+       59 +Un seguidor inactivo no recibe el push. Cuando vuelva a consul
+          +tar su timeline, el cache miss hace fallback a PostgreSQL (fan
+          +-out on read como fallback natural).                          
+       60 +                                                              
+       61 +La actividad se registra en cada `GET /timeline`: el use case 
+          +publica un `UserActivityEvent` de forma asíncrona; el consumer
+          + actualiza `users.last_active` en PostgreSQL con una guarda mo
+          +nótona (solo actualiza si el timestamp entrante es más nuevo).
+       62 +                                                              
+       63 +### Dónde almacenar last_active: Redis vs PostgreSQL          
+       64 +                                                              
+       65 +| Opción | Ventaja | Problema |                               
+       66 +|---|---|---|                                                 
+       67 +| Redis (`active:{userID}` con TTL) | Escritura O(1) | Para fi
+          +ltrar en el fanout habría que cargar todos los follower IDs de
+          +sde PostgreSQL y chequear Redis por cada uno — O(N) total |   
+       68 +| **PostgreSQL `last_active` column** (elegida) | Filtrado en 
+          +el JOIN; índice en `last_active` hace el corte en la capa corr
+          +ecta | Escritura levemente más costosa |                      
+       69 +                                                              
+       70  ### Consecuencias
+       71  
+       58 -- Latencia de lectura: O(1) desde Redis en casi todos los caso
+          -s.                                                            
+       59 -- Usuarios con millones de seguidores (celebrities) generarían
+          - fanout muy costoso. En producción se mitigaría con una estrat
+          -egia híbrida para ese segmento; para esta kata no aplica.     
+       72 +- `GET /timeline` es O(1) desde Redis en casi todos los casos.
+       73 +- El fanout es proporcional a los seguidores activos, no al to
+          +tal.                                                          
+       74  - Al hacer follow, se hace backfill de los últimos N tweets de
+           l autor (configurable via `FOLLOW_BACKFILL_LIMIT`).
+       75  
+       76  ---
+       77  
+       64 -## ADR-003: Estrategia de testing                             
+       78 +## ADR-003: Redis timeline como Sorted Set + Hash             
+       79  
+       80  **Estado:** Aceptado
+       81  
+       82 +### Contexto                                                  
+       83 +                                                              
+       84 +Durante la implementación inicial el timeline se almacenaba co
+          +mo JSON completo en el member del Sorted Set. Al introducir el
+          + fanout selectivo, cada tweet se escribe múltiples veces (una 
+          +por seguidor activo). Con JSON como member, cada escritura dup
+          +lica el payload completo en Redis.                            
+       85 +                                                              
+       86  ### Decisión
+       87  
+       70 -Dos niveles de test:                                          
+       88 +Separar en dos estructuras:                                   
+       89  
+       90 +```                                                           
+       91 +timeline:{user_id}       →  Sorted Set  (score: unix timestamp
+          +, member: tweet_id)                                           
+       92 +timeline:data:{user_id}  →  Hash        (field: tweet_id, valu
+          +e: JSON del tweet)                                            
+       93 +```                                                           
+       94 +                                                              
+       95 +La lectura combina `ZREVRANGE` + `HMGET`. La escritura usa `HS
+          +etNX` (idempotente): si el tweet ya existe en el hash, no se r
+          +eescribe el payload.                                          
+       96 +                                                              
+       97 +### Comportamiento de TTL                                     
+       98 +                                                              
+       99 +- **En write (fanout):** `ExpireNX` — setea TTL solo en keys n
+          +uevas, no sobreescribe el TTL de keys existentes.             
+      100 +- **En read:** `Expire` — renueva el TTL al valor completo de 
+          +`ACTIVITY_TTL`, extendiendo la ventana de actividad.          
+      101 +- Las keys expiran naturalmente cuando el usuario pasa a inact
+          +ivo, sin eviction explícita.                                  
+      102 +                                                              
+      103 +### Consecuencias                                             
+      104 +                                                              
+      105 +- Un read requiere dos round-trips a Redis en lugar de uno. En
+          + la práctica, Redis pipeline los hace casi en paralelo.       
+      106 +- La separación habilita `HSetNX` idempotente en el fanout: el
+          + mismo tweet puede llegar dos veces sin duplicar datos.       
+      107 +                                                              
+      108 +---                                                           
+      109 +                                                              
+      110 +## ADR-004: Estrategia de testing                             
+      111 +                                                              
+      112 +**Estado:** Aceptado                                          
+      113 +                                                              
+      114 +### Decisión                                                  
+      115 +                                                              
+      116 +Dos niveles de test, sin test E2E del flujo async completo:   
+      117 +                                                              
+      118  **Unit tests** (siempre corren):
+      119  - Mockean repositorios e interfaces privadas de los handlers.
+      120  - Cubren: validación de inputs, mapeo de errores de dominio a 
+           HTTP status codes, serialización.
+      121  
+       76 -**Integration tests** (`INTEGRATION=1`):                      
+      122 +**Integration tests** (`INTEGRATION=1 go test ./...`):        
+      123  - Levantan PostgreSQL y Redis reales (no mocks).
+      124  - Testean el flujo completo de punta a punta incluyendo escrit
+           uras en base de datos.
+      125  - Son el test primario para el happy path de cada handler.
+      126  
+       81 -### Motivación                                                
+      127 +### Por qué no hay test E2E del path async                    
+      128  
+      129 +Un test que recorra `POST /tweet → RabbitMQ → consumer → Redis
+          + → GET /timeline` con todos los servicios reales introduce tim
+          +ing no determinista (requiere sleep o polling antes del GET). 
+          +Además, el contrato de serialización entre publisher y consume
+          +r está garantizado por el compilador: `TweetCreatedEvent`, `Fo
+          +llowCreatedEvent` y `FanoutRetryEvent` son structs tipados def
+          +inidos en `domain/events.go` — ambos lados usan el mismo tipo,
+          + y cualquier cambio incompatible falla en compilación antes de
+          + correr ningún test.                                          
+      130 +                                                              
+      131 +### Motivación para integration tests con infra real          
+      132 +                                                              
+      133  Los mocks de base de datos pasaron tests que fallaban en produ
+           cción por divergencias en migraciones. Los tests de integració
+           n con infra real son la red de seguridad principal para el hap
+           py path.
+
+⏺ Bash(cd /tmp/uala.wiki && git diff --stat && git add Arquitectura.md
+      Decisiones-de-diseño.md && git diff --cached --stat)
+  ⎿   Arquitectura.md                  | 52 +++++++++++++++++++---------
+      "Decisiones-de-dise\303\261o.md" | 74 +++++++++++++++++++++++++++++++
+     ++-------
+     … +5 lines (ctrl+o to expand)
+
+⏺ Bash(cd /tmp/uala.wiki && git commit -m "$(cat <<'EOF'
+      docs: complete architecture and design decisions wiki pages…)
+  ⎿  [master b69999f] docs: complete architecture and design decisions wiki
+      pages
+      2 files changed, 98 insertions(+), 28 deletions(-)
+
+⏺ Bash(cd /tmp/uala.wiki && git push)
+  ⎿  Error: Exit code 128
+     fatal: could not read Username for 'https://github.com': Device not 
+     configured
+
+⏺ No tengo credenciales para pushear. Necesitás hacer el push vos desde
+  /tmp/uala.wiki:
+
+  cd /tmp/uala.wiki && git push
+
+  O si preferís usar SSH:
+  cd /tmp/uala.wiki
+  git remote set-url origin git@github.com:G00nza/uala.wiki.git
+  git push
+
+  ---
+  Resumen de lo que cambié:
+
+  Arquitectura.md:
+  - Tabla de componentes de infraestructura (Postgres, Redis, RabbitMQ,
+  Prometheus)
+  - Flujo de tweet actualizado con el fanout filtrado y cálculo de TTL
+  - Sección nueva: "Fanout selectivo (celebrity problem)"
+  - Sección nueva: "Fanout retry y DLQ"
+  - Sección nueva: "Redis: estructura del timeline" (Sorted Set + Hash)
+  - Cursor pagination documentado en el flujo de GET /timeline
+
+  Decisiones-de-diseño.md:
+  - ADR-002 reescrito: ya no dice "Para esta kata no aplica" — documenta el
+  fanout selectivo como la decisión tomada, con la tabla de alternativas y el
+  trade-off Redis vs Postgres para last_active
+  - ADR-003 nuevo: Redis Sorted Set + Hash (por qué se migró, TTL behavior)
+  - ADR-004 nuevo: estrategia de testing con justificación de por qué no hay
+  test E2E async
+
+✻ Cooked for 2m 26s
+
+❯ deja en la carpeta docs la misma estructura de ficheros, elimina todos los    
+  demas archivos de documentacion (menos el readme)                             
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ La estructura wiki tiene 4 archivos. El plan: copiarlos a docs/, eliminar
+  decisions.md, architecture.svg, docs/iterations/ y docs/tradeoffs/. docs/api/
+  y docs/superpowers/ (gitignoreado) se mantienen.
+
+⏺ Bash(cp /tmp/uala.wiki/Home.md /Users/gonza/Katas/uala/docs/Home.md && cp
+      /tmp/uala.wiki/Arquitectura.md
+      /Users/gonza/Katas/uala/docs/Arquitectura.md && cp /tmp/uala…)
+  ⎿  Done
+
+⏺ Bash(rm /Users/gonza/Katas/uala/docs/architecture.svg
+      /Users/gonza/Katas/uala/docs/decisions.md && rm -r
+      /Users/gonza/Katas/uala/docs/iterations/ /Users/gonza/Katas/…)
+  ⎿  Done
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Listo. docs/ queda así:
+
+  docs/
+  ├── api/
+  │   └── openapi.yaml
+  ├── Arquitectura.md
+  ├── Decisiones-de-diseño.md
+  ├── Home.md
+  └── Observabilidad.md
+
+  Eliminados: architecture.svg, decisions.md, iterations/ (5 archivos),
+  tradeoffs/ (3 archivos). superpowers/ intacto (gitignoreado).
+
+✻ Sautéed for 26s
+
+※ recap: Estamos preparando la kata técnica de Ualá para entrega. Resolvimos 6 de 8 gaps identificados (OpenAPI, Makefile, .env.example, business.txt, logging, y wiki completa). Quedan pendientes el gap 2 (doc high-level, ya cubierto por la wiki) y el gap 5 (test de integración del flujo tweet→timeline).
+
+❯ commitea                                                                      
+⏺ Bash(git -C /Users/gonza/Katas/uala status && git -C /Users/gonza/Katas/uala
+      diff --cached --stat)
+  ⎿  On branch master
+     Your branch is up to date with 'origin/master'.
+     … +21 lines (ctrl+o to expand)
+
+⏺ Bash(git -C /Users/gonza/Katas/uala log --oneline -5)
+  ⎿  46c8f49 stuff
+     aa0b70d feat(handler): cursor pagination params and next/prev cursors
+     in response
+     … +6 lines (ctrl+o to expand)
+
+⏺ Bash(cd /Users/gonza/Katas/uala && git add .env.example Makefile business.txt
+      docs/api/openapi.yaml docs/architecture.svg docs/decisions.md
+      docs/iterations/ docs/tra…)
+  ⎿  [master 770028a] fix: resolve kata gaps and consolidate documentation
+      22 files changed, 400 insertions(+), 1167 deletions(-)
+      create mode 100644 docs/Arquitectura.md
+     … +14 lines (ctrl+o to expand)
+
+⏺ Commiteado. 22 archivos en un solo commit: los 6 gaps fixes + la consolidación
+   de docs.
+
+✻ Churned for 25s
+
+❯ cual es el % de coverage de los tests                                         
+
+⏺ Bash(go test ./... -coverprofile=/tmp/coverage.out 2>&1 && go tool cover
+      -func=/tmp/coverage.out)
+  ⎿  ok         uala/cmd/api    0.702s  coverage: 12.3% of statements
+        uala/cmd/migrate                coverage: 0.0% of statements
+     ?          uala/internal/domain    [no test files]
+     … +70 lines (ctrl+o to expand)
+
+⏺ 44.5% total — pero el número es engañoso porque incluye packages que no tienen
+   tests por diseño. El desglose real que importa:
+
+  ┌────────────────────┬──────────┬──────────────────────────────────────────┐
+  │      Package       │ Coverage │                   Nota                   │
+  ├────────────────────┼──────────┼──────────────────────────────────────────┤
+  │ usecase            │ 91.2%    │ El más crítico — muy bien cubierto       │
+  ├────────────────────┼──────────┼──────────────────────────────────────────┤
+  │ handler            │ 75.5%    │ Bueno; faltan algunos error paths        │
+  ├────────────────────┼──────────┼──────────────────────────────────────────┤
+  │ metrics            │ 42.3%    │ pgx_tracer sin tests (0%) arrastra el    │
+  │                    │          │ número                                   │
+  ├────────────────────┼──────────┼──────────────────────────────────────────┤
+  │ messaging/rabbitmq │ 34.0%    │ handleTweetCreated, handleFollowCreated, │
+  │                    │          │  runLoop, publisher entero: todos en 0%  │
+  ├────────────────────┼──────────┼──────────────────────────────────────────┤
+  │ cmd/api            │ 12.3%    │ main() no se testea, es normal           │
+  ├────────────────────┼──────────┼──────────────────────────────────────────┤
+  │ infra, migrations  │ 0%       │ Configuración/infra, esperado            │
+  └────────────────────┴──────────┴──────────────────────────────────────────┘
+
+  El gap más significativo es el consumer de RabbitMQ: las funciones de handling
+   de mensajes (handleTweetCreated, handleFollowCreated, runLoop, todo el
+  publisher) están en 0% porque son las que requieren infra real o el test E2E
+  async que no existe. fanoutTweet, handleFanoutRetry y handleUserActivity sí
+  están cubiertos (80-100%) porque tienen tests unitarios con mocks.
+
+  Para una kata, usecase a 91% + handler a 75% es lo que realmente demuestra
+  criterio de testing — es donde vive la lógica de negocio.
+
+✻ Sautéed for 21s
+
+❯ seguro que el gap 2 y 5 no estan resuelto con la nueva documentacion?         
+
+⏺ Buena pregunta. Pensándolo bien:
+
+  Gap 2 — Los docs existen ahora en docs/ y en la wiki, pero déjame verificar si
+   el README los referencia como punto de entrada.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Confirmado. Los dos gaps siguen abiertos:
+
+  Gap 2 — Los docs existen pero el README no los referencia. Un evaluador que
+  clone el repo y lea el README no tiene forma de saber que existe docs/Home.md
+  ni la wiki. El "punto de entrada único" sigue sin estar conectado.
+
+  Gap 5 — Agregamos ADR-004 que explica por qué no hay test E2E async, pero eso
+  es documentar la ausencia, no resolverla. El happy path de la kata (tweet →
+  aparece en timeline del follower) sigue sin ningún test de integración. La
+  documentación no es un sustituto del test.
+
+  ¿Querés que resuelva ambos ahora? Para el 2 es agregar una sección en el
+  README. Para el 5 hay que escribir el test, con un poll/sleep para el fanout
+  async.
+
+✻ Sautéed for 23s
+
+❯ resuelve el gap 2, amendealo al ultimo commit                                 
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(README.md)
+  ⎿  Added 2 lines
+      2  
+      3  Implementación de una plataforma similar a Twitter: publicación 
+         de tweets, follows y timeline personalizado. Kata técnica desarr
+         ollada en Go con arquitectura limpia.
+      4  
+      5 +**Documentación técnica:** [Arquitectura](docs/Arquitectura.md) 
+        +· [Decisiones de diseño](docs/Decisiones-de-diseño.md) · [Observ
+        +abilidad](docs/Observabilidad.md) · [OpenAPI](docs/api/openapi.y
+        +aml)                                                            
+      6 +                                                                
+      7  ---
+      8  
+      9  ## Requisitos previos
+
+⏺ Bash(git add README.md && git commit --amend --no-edit)
+  ⎿  [master 7ce5ff6] fix: resolve kata gaps and consolidate documentation
+      Date: Sun May 3 00:40:01 2026 +0200
+      23 files changed, 402 insertions(+), 1167 deletions(-)
+     … +14 lines (ctrl+o to expand)
+
+⏺ Listo. El README ahora tiene la línea de links al tope, antes del primer
+  separador:
+
+  Documentación técnica: Arquitectura · Decisiones de diseño · Observabilidad ·
+  OpenAPI
+
+  Gap 2 cerrado — un evaluador que clone el repo lo ve en el primer scroll.
+
+✻ Crunched for 24s
+
+❯ /usage 
+  ⎿  Status dialog dismissed
+
+※ recap: Estuvimos analizando y corrigiendo gaps de la kata técnica de Ualá antes de su entrega. Resolvimos 7 de 8 gaps (OpenAPI, Makefile, .env.example, business.txt, logging, docs, README). Queda pendiente el gap 5: escribir el test de integración del flujo tweet→timeline.

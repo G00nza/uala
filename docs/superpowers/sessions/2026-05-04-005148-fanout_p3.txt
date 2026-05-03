@@ -1,0 +1,506 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ en el fanout hay un bug critico, cuando un usuario tweetea, su propio tweet   
+  tiene que aparecer en su timeline                                             
+
+⏺ Skill(superpowers:systematic-debugging)
+  ⎿  Successfully loaded skill
+
+⏺ Voy a trazar el flujo de datos del fanout para encontrar la causa raíz antes
+  de proponer ningún fix.
+
+⏺ Bash(find /Users/gonza/Katas/uala/internal -type f -name "*.go" | xargs grep
+      -l "TweetCreated\|ConsumeTweet\|fanout\|GetActiveFollowers" | sort)
+  ⎿  /Users/gonza/Katas/uala/internal/domain/events.go
+     /Users/gonza/Katas/uala/internal/domain/follow.go
+     /Users/gonza/Katas/uala/internal/handler/mocks_test.go
+     … +10 lines (ctrl+o to expand)
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Causa raíz identificada. Veamos el tipo FollowerActivity para confirmar.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Causa raíz confirmada.
+
+  En handleTweetCreated (consumer.go:165), el fanout llama a GetActiveFollowers
+  que solo retorna los seguidores del autor. El autor nunca se incluye en la
+  lista de destinatarios, entonces su propio tweet nunca llega a su Redis
+  timeline.
+
+  La query de Postgres lo confirma: WHERE f.followee_id = $1 — solo devuelve
+  quienes siguen al autor, no el autor mismo.
+
+  Fix: En handleTweetCreated, agregar al autor como FollowerActivity con
+  LastActive: time.Now() (acaba de tweetear, está activo) antes de llamar a
+  fanoutTweet.
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 3 lines
+      170      return
+      171    }
+      172  
+      173 +  // Include the author so their own tweet appears in their ow
+          +n timeline.                                                   
+      174 +  followers = append([]domain.FollowerActivity{{ID: evt.UserID
+          +, LastActive: time.Now()}}, followers...)                     
+      175 +                                                              
+      176    if err := c.fanoutTweet(ctx, evt, followers); err != nil {
+      177      slog.ErrorContext(ctx, "rabbitmq: all fanout writes failed
+           ", "tweet_id", evt.TweetID, "err", err)
+      178      metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetC
+           reated).Inc()
+
+⏺ Ahora verifico que compila y corro los tests del consumer:
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -v 2>&1)
+  ⎿  === RUN   TestHandleTweetCreated_FanoutIsConcurrent
+     --- PASS: TestHandleTweetCreated_FanoutIsConcurrent (0.01s)
+     === RUN   TestFanoutTweet_AllFail_ReturnsError
+     … +45 lines (ctrl+o to expand)
+
+⏺ Todos los tests pasan. Pero noto que el test
+  TestHandleTweetCreated_FanoutIsConcurrent no verifica que el autor recibe su
+  propio tweet. Verifiquemos qué cubre y agreguemos el caso:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Los tests existentes prueban fanoutTweet directamente, no el path completo de
+  handleTweetCreated. Agrego un test que cubre exactamente el bug regresado:
+
+⏺ Update(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Added 44 lines
+      237    return nil
+      238  }
+      239  
+      240 +// recordingFanout records every userID passed to AppendTweet.
+      241 +type recordingFanout struct {                                 
+      242 +  mu         sync.Mutex                                       
+      243 +  recipients []uuid.UUID                                      
+      244 +}                                                             
+      245 +                                                              
+      246 +func (r *recordingFanout) AppendTweet(_ context.Context, userI
+          +D uuid.UUID, _ domain.TweetItem, _ time.Duration) error {     
+      247 +  r.mu.Lock()                                                 
+      248 +  defer r.mu.Unlock()                                         
+      249 +  r.recipients = append(r.recipients, userID)                 
+      250 +  return nil                                                  
+      251 +}                                                             
+      252 +                                                              
+      253 +func TestHandleTweetCreated_AuthorReceivesOwnTweet(t *testing.
+          +T) {                                                          
+      254 +  authorID := uuid.New()                                      
+      255 +                                                              
+      256 +  recorded := &recordingFanout{}                              
+      257 +  c := &Consumer{                                             
+      258 +    followRepo:    &stubFollowRepo{followers: []uuid.UUID{}}, 
+      259 +    fanout:        recorded,                                  
+      260 +    fanoutWorkers: fanoutConcurrency,                         
+      261 +    activityTTL:   24 * time.Hour,                            
+      262 +  }                                                           
+      263 +                                                              
+      264 +  evt := domain.TweetCreatedEvent{                            
+      265 +    TweetID:   uuid.New(),                                    
+      266 +    UserID:    authorID,                                      
+      267 +    Username:  "author",                                      
+      268 +    Content:   "my tweet",                                    
+      269 +    CreatedAt: time.Now(),                                    
+      270 +  }                                                           
+      271 +  body, _ := json.Marshal(evt)                                
+      272 +  c.handleTweetCreated(context.Background(), amqp.Delivery{Bod
+          +y: body})                                                     
+      273 +                                                              
+      274 +  recorded.mu.Lock()                                          
+      275 +  defer recorded.mu.Unlock()                                  
+      276 +  if len(recorded.recipients) != 1 {                          
+      277 +    t.Fatalf("want 1 AppendTweet call (the author), got %d", l
+          +en(recorded.recipients))                                      
+      278 +  }                                                           
+      279 +  if recorded.recipients[0] != authorID {                     
+      280 +    t.Errorf("want authorID %s in fanout, got %s", authorID, r
+          +ecorded.recipients[0])                                        
+      281 +  }                                                           
+      282 +}                                                             
+      283 +                                                              
+      284  func makeDelivery(body []byte, xDeathCount int64) amqp.Deliver
+           y {
+      285    headers := amqp.Table{}
+      286    if xDeathCount > 0 {
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -run TestHandleTweetCreated -v
+      2>&1)
+  ⎿  === RUN   TestHandleTweetCreated_FanoutIsConcurrent
+     --- PASS: TestHandleTweetCreated_FanoutIsConcurrent (0.01s)
+     === RUN   TestHandleTweetCreated_AuthorReceivesOwnTweet
+     … +3 lines (ctrl+o to expand)
+
+⏺ Ambos tests pasan. Suite completa verde:
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ok         uala/cmd/api    (cached)
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ Todo verde.
+
+  Resumen del bug y el fix:
+
+  - Causa raíz: handleTweetCreated llamaba a GetActiveFollowers que solo retorna
+   quienes siguen al autor. El autor nunca estaba en esa lista, por lo que su
+  tweet nunca se escribía en su propio Redis timeline.
+  - Fix (consumer.go:168): Antes de llamar a fanoutTweet, se prepend el autor
+  como FollowerActivity{ID: evt.UserID, LastActive: time.Now()}. Como acaba de
+  tweetear, está activo y recibe el TTL completo (activityTTL). El resto del
+  fanout no se toca.
+  - Test agregado: TestHandleTweetCreated_AuthorReceivesOwnTweet verifica
+  end-to-end que un autor sin seguidores recibe exactamente 1 llamada a
+  AppendTweet con su propio ID.
+
+✻ Worked for 1m 55s
+
+❯ en la query de sql fallback de /timeline seguro que tambien esta este         
+  problema                                                                      
+  Read 1 file (ctrl+o to expand)
+
+⏺ Bash(find /Users/gonza/Katas/uala/internal/repository -name "*.go" | xargs
+      grep -l "timeline\|GetTimeline" | sort)
+  ⎿  /Users/gonza/Katas/uala/internal/repository/postgres/setup_test.go
+     /Users/gonza/Katas/uala/internal/repository/postgres/timeline_test.go
+     /Users/gonza/Katas/uala/internal/repository/postgres/timeline.go
+     … +2 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Confirmado. Las tres queries hacen FROM follows f JOIN tweets t ON t.user_id =
+   f.followee_id WHERE f.follower_id = $1 — solo tweets de personas que sigo,
+  nunca los propios.
+
+  El fix: reemplazar el JOIN con follows por un filtro WHERE t.user_id = $1 OR 
+  t.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1). Es
+  equivalente semánticamente y Postgres lo optimiza bien con el índice en
+  follower_id.
+
+⏺ Update(internal/repository/postgres/timeline.go)
+  ⎿  Added 3 lines, removed 3 lines
+      60  func (r *TimelineRepository) getTimelineFirst(ctx context.Conte
+          xt, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+      61    rows, err := r.db.Query(ctx, `
+      62      SELECT t.id, t.user_id, u.username, t.content, t.created_at
+      63 -    FROM follows f                                             
+      64 -    JOIN tweets t ON t.user_id = f.followee_id                 
+      63 +    FROM tweets t                                              
+      64      JOIN users u ON u.id = t.user_id
+      66 -    WHERE f.follower_id = $1                                   
+      65 +    WHERE t.user_id = $1                                       
+      66 +       OR t.user_id IN (SELECT followee_id FROM follows WHERE f
+         +ollower_id = $1)                                               
+      67      ORDER BY t.created_at DESC
+      68      LIMIT $2
+      69    `, q.UserID, q.Limit)
+
+⏺ Update(internal/repository/postgres/timeline.go)
+  ⎿  Added 2 lines, removed 3 lines
+      77  func (r *TimelineRepository) getTimelineAfter(ctx context.Conte
+          xt, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+      78    rows, err := r.db.Query(ctx, `
+      79      SELECT t.id, t.user_id, u.username, t.content, t.created_at
+      80 -    FROM follows f                                             
+      81 -    JOIN tweets t ON t.user_id = f.followee_id                 
+      80 +    FROM tweets t                                              
+      81      JOIN users u ON u.id = t.user_id
+      83 -    WHERE f.follower_id = $1                                   
+      82 +    WHERE (t.user_id = $1 OR t.user_id IN (SELECT followee_id F
+         +ROM follows WHERE follower_id = $1))                           
+      83        AND t.created_at < (SELECT created_at FROM tweets WHERE i
+          d = $2)
+      84      ORDER BY t.created_at DESC
+      85      LIMIT $3
+
+⏺ Update(internal/repository/postgres/timeline.go)
+  ⎿  Added 2 lines, removed 3 lines
+       94  func (r *TimelineRepository) getTimelineBefore(ctx context.Con
+           text, q domain.TimelineQuery) ([]domain.TweetItem, error) {
+       95    rows, err := r.db.Query(ctx, `
+       96      SELECT t.id, t.user_id, u.username, t.content, t.created_a
+           t
+       97 -    FROM follows f                                            
+       98 -    JOIN tweets t ON t.user_id = f.followee_id                
+       97 +    FROM tweets t                                             
+       98      JOIN users u ON u.id = t.user_id
+      100 -    WHERE f.follower_id = $1                                  
+       99 +    WHERE (t.user_id = $1 OR t.user_id IN (SELECT followee_id 
+          +FROM follows WHERE follower_id = $1))                         
+      100        AND t.created_at > (SELECT created_at FROM tweets WHERE 
+           id = $2)
+      101      ORDER BY t.created_at ASC
+      102      LIMIT $3
+
+⏺ Bash(go build ./... && go test ./internal/repository/postgres/... -v 2>&1)
+  ⎿  ok         uala/internal/repository/postgres       0.462s
+
+⏺ Los tests pasan (son unitarios/cacheados). Verifiquemos si los tests de
+  integración cubren este caso:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Ningún test cubre el caso del bug. Agrego tres tests de integración — uno por
+  variante de paginación:
+
+⏺ Update(internal/repository/postgres/timeline_test.go)
+  ⎿  Added 70 lines
+      122    }
+      123  }
+      124  
+      125 +func TestTimelineRepository_GetTimeline_IncludesOwnTweets(t *t
+          +esting.T) {                                                   
+      126 +  r := setup(t)                                               
+      127 +                                                              
+      128 +  alice := &domain.User{ID: uuid.New(), Username: "alice_own",
+          + CreatedAt: time.Now().UTC()}                                 
+      129 +  _ = r.user.Create(context.Background(), alice)              
+      130 +                                                              
+      131 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{     
+      132 +    ID: uuid.New(), UserID: alice.ID, Content: "my own tweet",
+          + CreatedAt: time.Now().UTC(),                                 
+      133 +  })                                                          
+      134 +                                                              
+      135 +  items, err := r.timeline.GetTimeline(context.Background(), d
+          +omain.TimelineQuery{UserID: alice.ID, Limit: 20})             
+      136 +  if err != nil {                                             
+      137 +    t.Fatalf("GetTimeline: %v", err)                          
+      138 +  }                                                           
+      139 +  if len(items) != 1 {                                        
+      140 +    t.Fatalf("want 1 item (own tweet), got %d", len(items))   
+      141 +  }                                                           
+      142 +  if items[0].Content != "my own tweet" {                     
+      143 +    t.Fatalf("want 'my own tweet', got %s", items[0].Content) 
+      144 +  }                                                           
+      145 +}                                                             
+      146 +                                                              
+      147 +func TestTimelineRepository_GetTimeline_AfterCursor_IncludesOw
+          +nTweets(t *testing.T) {                                       
+      148 +  r := setup(t)                                               
+      149 +                                                              
+      150 +  alice := &domain.User{ID: uuid.New(), Username: "alice_own_a
+          +fter", CreatedAt: time.Now().UTC()}                           
+      151 +  _ = r.user.Create(context.Background(), alice)              
+      152 +                                                              
+      153 +  base := time.Now().UTC().Truncate(time.Second)              
+      154 +  t1ID := uuid.New()                                          
+      155 +  t2ID := uuid.New()                                          
+      156 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +1ID, UserID: alice.ID, Content: "own1", CreatedAt: base.Add(-1
+          + * time.Minute)})                                             
+      157 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +2ID, UserID: alice.ID, Content: "own2", CreatedAt: base})     
+      158 +                                                              
+      159 +  // after=t2ID → tweets older than own2 → [own1]             
+      160 +  items, err := r.timeline.GetTimeline(context.Background(), d
+          +omain.TimelineQuery{                                          
+      161 +    UserID: alice.ID, After: &t2ID, Limit: 20,                
+      162 +  })                                                          
+      163 +  if err != nil {                                             
+      164 +    t.Fatalf("GetTimeline after: %v", err)                    
+      165 +  }                                                           
+      166 +  if len(items) != 1 || items[0].Content != "own1" {          
+      167 +    t.Fatalf("want [own1], got %v", items)                    
+      168 +  }                                                           
+      169 +}                                                             
+      170 +                                                              
+      171 +func TestTimelineRepository_GetTimeline_BeforeCursor_IncludesO
+          +wnTweets(t *testing.T) {                                      
+      172 +  r := setup(t)                                               
+      173 +                                                              
+      174 +  alice := &domain.User{ID: uuid.New(), Username: "alice_own_b
+          +efore", CreatedAt: time.Now().UTC()}                          
+      175 +  _ = r.user.Create(context.Background(), alice)              
+      176 +                                                              
+      177 +  base := time.Now().UTC().Truncate(time.Second)              
+      178 +  t1ID := uuid.New()                                          
+      179 +  t2ID := uuid.New()                                          
+      180 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +1ID, UserID: alice.ID, Content: "own1", CreatedAt: base.Add(-1
+          + * time.Minute)})                                             
+      181 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +2ID, UserID: alice.ID, Content: "own2", CreatedAt: base})     
+      182 +                                                              
+      183 +  // before=t1ID → tweets newer than own1 → [own2]            
+      184 +  items, err := r.timeline.GetTimeline(context.Background(), d
+          +omain.TimelineQuery{                                          
+      185 +    UserID: alice.ID, Before: &t1ID, Limit: 20,               
+      186 +  })                                                          
+      187 +  if err != nil {                                             
+      188 +    t.Fatalf("GetTimeline before: %v", err)                   
+      189 +  }                                                           
+      190 +  if len(items) != 1 || items[0].Content != "own2" {          
+      191 +    t.Fatalf("want [own2], got %v", items)                    
+      192 +  }                                                           
+      193 +}                                                             
+      194 +                                                              
+      195  func TestTimelineRepository_GetTimeline_BeforeCursor(t *testin
+           g.T) {
+      196    r := setup(t)
+      197  
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Build limpio. Los tres tests nuevos son de integración (INTEGRATION=1 +
+  Postgres real), así que no se ejecutan en go test ./... sin infra. Con make up
+   + INTEGRATION=1 go test ./internal/repository/postgres/... -run 
+  IncludesOwnTweets se verifican contra la base real.
+
+  Resumen:
+
+  - Las tres queries (getTimelineFirst, getTimelineAfter, getTimelineBefore)
+  pasaban de FROM follows JOIN tweets ... WHERE follower_id = $1 a un filtro
+  WHERE t.user_id = $1 OR t.user_id IN (SELECT followee_id FROM follows WHERE 
+  follower_id = $1), que incluye los tweets propios del usuario sin cambiar la
+  semántica para los tweets de seguidos.
+  - Tres tests de integración nuevos cubren el bug exacto: usuario sin
+  seguidores, sus propios tweets deben aparecer en cada variante de paginación.
+
+✻ Cogitated for 1m 23s
+
+※ recap: Fixed a bug where users couldn't see their own tweets in their timeline — both in the async fanout (consumer.go) and the Postgres SQL fallback (timeline.go). No next action pending.
+
+❯ comitea y pushea                                                              
+
+⏺ Bash(git status && git diff)
+  ⎿  On branch master
+     Your branch is up to date with 'origin/master'.
+     … +274 lines (ctrl+o to expand)
+
+⏺ El diff tiene dos conjuntos de cambios distintos: el refactor de use cases (ya
+   existía) y los bugfixes de esta sesión. Los separo en dos commits.
+
+⏺ Bash(git add CLAUDE.md cmd/api/main.go "docs/Decisiones-de-diseño.md"
+      internal/handler/follow.go internal/handler/mocks_test.go
+      internal/handler/setup_test.go intern…)
+  ⎿  (No output)
+
+⏺ Bash(git commit -m "$(cat <<'EOF'
+      refactor(usecase): rename use cases to action-based naming with Execute
+      method…)
+  ⎿  [master 5b70e67] refactor(usecase): rename use cases to action-based n
+     aming with Execute method
+      17 files changed, 92 insertions(+), 90 deletions(-)
+     … +9 lines (ctrl+o to expand)
+
+⏺ Bash(git add internal/messaging/rabbitmq/consumer.go
+      internal/messaging/rabbitmq/consumer_test.go
+      internal/repository/postgres/timeline.go internal/repository/postgr…)
+  ⎿  (No output)
+
+⏺ Bash(git commit -m "$(cat <<'EOF'
+      fix: include author's own tweets in timeline (fanout and SQL fallback)…)  ⎿  [master 97ba4ec] fix: include author's own tweets in timeline (fanout
+     and SQL fallback)
+      4 files changed, 124 insertions(+), 9 deletions(-)
+
+⏺ Bash(git push)
+  ⎿  To github.com:G00nza/uala.git
+        7ce5ff6..97ba4ec  master -> master
+
+⏺ Dos commits pusheados:
+
+  - refactor(usecase) — renames + Execute method (cambios pre-existentes)
+  - fix — tweets propios en timeline: fanout consumer + SQL fallback, con tests
+
+✻ Cooked for 51s
+
+❯ excluye el endpoint /metrics de los graficos de grafana                       
+
+⏺ Voy a explorar la configuración de Grafana y las métricas para entender cómo
+  están definidos los dashboards.
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+⏺ Solo los paneles de latencia y request rate usan el label path. Agrego
+  path!="/metrics" a las cuatro expresiones PromQL afectadas:
+
+⏺ Update(monitoring/grafana/dashboards/uala.json)
+  ⎿  Added 1 line, removed 1 line
+      23        "options": { "legend": { "calcs": ["p50", "p95", "p99"], 
+          "displayMode": "table", "placement": "bottom" } },
+      24        "targets": [
+      25          {
+      26 -          "expr": "histogram_quantile(0.50, sum(rate(http_reque
+         -st_duration_seconds_bucket[5m])) by (le, path))",              
+      26 +          "expr": "histogram_quantile(0.50, sum(rate(http_reque
+         +st_duration_seconds_bucket{path!=\"/metrics\"}[5m])) by (le, pa
+         +th))",                                                         
+      27            "legendFormat": "p50 {{path}}"
+      28          },
+      29          {
+
+⏺ Update(monitoring/grafana/dashboards/uala.json)
+  ⎿  Added 1 line, removed 1 line
+      27            "legendFormat": "p50 {{path}}"
+      28          },
+      29          {
+      30 -          "expr": "histogram_quantile(0.95, sum(rate(http_reque
+         -st_duration_seconds_bucket[5m])) by (le, path))",              
+      30 +          "expr": "histogram_quantile(0.95, sum(rate(http_reque
+         +st_duration_seconds_bucket{path!=\"/metrics\"}[5m])) by (le, pa
+         +th))",                                                         
+      31            "legendFormat": "p95 {{path}}"
+      32          },
+      33          {
+
+⏺ Update(monitoring/grafana/dashboards/uala.json)
+  ⎿  Added 1 line, removed 1 line
+      31            "legendFormat": "p95 {{path}}"
+      32          },
+      33          {
+      34 -          "expr": "histogram_quantile(0.99, sum(rate(http_reque
+         -st_duration_seconds_bucket[5m])) by (le, path))",              
+      34 +          "expr": "histogram_quantile(0.99, sum(rate(http_reque
+         +st_duration_seconds_bucket{path!=\"/metrics\"}[5m])) by (le, pa
+         +th))",                                                         
+      35            "legendFormat": "p99 {{path}}"
+      36          }
+      37        ],
+
+⏺ Update(monitoring/grafana/dashboards/uala.json)
+  ⎿  Added 1 line, removed 1 line
+      45        "id": 2,
+      46        "targets": [
+      47          {
+      48 -          "expr": "sum by (path, status) (rate(http_requests_to
+         -tal[5m]))",                                                    
+      48 +          "expr": "sum by (path, status) (rate(http_requests_to
+         +tal{path!=\"/metrics\"}[5m]))",                                
+      49            "legendFormat": "{{path}} {{status}}"
+      50          }
+      51        ],
+
+⏺ Bash(git add monitoring/grafana/dashboards/uala.json && git commit -m "$(cat
+      <<'EOF'
+      fix(grafana): exclude /metrics endpoint from HTTP panels…)
+  ⎿  [master 6497c5b] fix(grafana): exclude /metrics endpoint from HTTP pan
+     els
+      1 file changed, 4 insertions(+), 4 deletions(-)
+     … +2 lines (ctrl+o to expand)
+
+⏺ Listo. Los cuatro queries PromQL de los paneles HTTP ahora llevan
+  {path!="/metrics"}:
+
+  - http_request_duration_seconds_bucket — p50, p95, p99
+  - http_requests_total — request rate por endpoint y status
+
+  El scrape de Prometheus hacia /metrics ya no va a distorsionar las latencias
+  ni el throughput en Grafana.
+
+✻ Baked for 40s
+
+※ recap: Fixed two bugs where users couldn't see their own tweets in their timeline, across both the Redis fanout and the Postgres SQL fallback. All changes committed and pushed.

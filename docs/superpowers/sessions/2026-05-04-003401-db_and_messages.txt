@@ -1,0 +1,1100 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ docs/superpowers/gaps.md gap 5
+
+⏺ Let me read the gaps file first.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Gap 5 is about silent publish errors — the publisher discards errors with _ = 
+  uc.publisher.PublishTweetCreated(ctx, event) and has no logging or metrics
+  when RabbitMQ publish fails.
+
+  Let me invoke the TDD skill before implementing the fix.
+
+⏺ Skill(superpowers:test-driven-development)
+  ⎿  Successfully loaded skill
+
+⏺ Using TDD to fix gap 5: log publisher errors instead of silently discarding
+  them. Let me first explore the relevant code.
+
+⏺ Bash(find /Users/gonza/Katas/uala -type f -name "*.go" | xargs grep -l
+      "PublishTweetCreated\|publisher" 2>/dev/null | head -20)
+  ⎿  /Users/gonza/Katas/uala/cmd/api/main.go
+     /Users/gonza/Katas/uala/internal/handler/mocks_test.go
+     /Users/gonza/Katas/uala/internal/usecase/follow.go
+     … +6 lines (ctrl+o to expand)
+
+  Searched for 1 pattern, read 3 files (ctrl+o to expand)
+
+⏺ Let me check the existing logging setup and the follow use case.
+
+  Searched for 2 patterns, read 2 files (ctrl+o to expand)
+
+⏺ The project uses Go 1.25 so slog is available. The fix needs a logger in the
+  use case. Following TDD — I'll write the failing test first.
+
+  RED phase: Writing the test that verifies publish errors are logged.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/usecase/tweet_test.go)
+  ⎿  Added 4 lines
+       1  package usecase_test
+       2  
+       3  import (
+       4 +  "bytes"                                                      
+       5    "context"
+       6 +  "errors"                                                     
+       7 +  "log/slog"                                                   
+       8 +  "strings"                                                    
+       9    "testing"
+      10  
+      11    "github.com/google/uuid"
+
+⏺ Now add the failing test at the end of the file:
+
+⏺ Update(internal/usecase/tweet_test.go)
+  ⎿  Added 18 lines
+       94      t.Fatalf("publish error must not propagate, got: %v", err)
+       95    }
+       96  }
+       97 +                                                              
+       98 +func TestTweetUseCase_CreateTweet_PublishErrorIsLogged(t *test
+          +ing.T) {                                                      
+       99 +  userID := uuid.New()                                        
+      100 +  userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, 
+          +Username: "alice"}}                                           
+      101 +  publisher := &mockTweetPublisher{publishErr: errors.New("rab
+          +bitmq connection refused")}                                   
+      102 +                                                              
+      103 +  var buf bytes.Buffer                                        
+      104 +  logger := slog.New(slog.NewTextHandler(&buf, nil))          
+      105 +  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pu
+          +blisher).WithLogger(logger)                                   
+      106 +                                                              
+      107 +  _, err := uc.CreateTweet(context.Background(), userID, "test
+          + publish logging")                                            
+      108 +  if err != nil {                                             
+      109 +    t.Fatalf("publish error must not propagate, got: %v", err)
+      110 +  }                                                           
+      111 +  if !strings.Contains(buf.String(), "rabbitmq connection refu
+          +sed") {                                                       
+      112 +    t.Fatalf("expected publish error in log, got: %q", buf.Str
+          +ing())                                                        
+      113 +  }                                                           
+      114 +}                                                             
+
+⏺ Verify RED — run the test and confirm it fails for the right reason:
+
+⏺ Bash(go test ./internal/usecase/... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/usecase_test [uala/internal/usecase.test]
+     internal/usecase/tweet_test.go:105:71: usecase.NewTweetUseCase(userRepo, 
+     &mockTweetRepo{}, publisher).WithLogger undefined (type 
+     *usecase.TweetUseCase has no field or method WithLogger)
+     FAIL       uala/internal/usecase [build failed]
+     FAIL
+
+⏺ Test fails for the right reason — WithLogger doesn't exist. GREEN phase:
+  implement minimally.
+
+⏺ Update(internal/usecase/tweet.go)
+  ⎿  Added 8 lines
+      2  
+      3  import (
+      4    "context"
+      5 +  "log/slog"                                                    
+      6    "time"
+      7    "unicode/utf8"
+      8  
+     ...
+      14    userRepo  domain.UserRepository
+      15    tweetRepo domain.TweetRepository
+      16    publisher domain.TweetEventPublisher
+      17 +  logger    *slog.Logger                                       
+      18  }
+      19  
+      20  func NewTweetUseCase(
+     ...
+      26      userRepo:  userRepo,
+      27      tweetRepo: tweetRepo,
+      28      publisher: publisher,
+      29 +    logger:    slog.Default(),                                 
+      30    }
+      31  }
+      32  
+      33 +func (uc *TweetUseCase) WithLogger(l *slog.Logger) *TweetUseCas
+         +e {                                                            
+      34 +  uc.logger = l                                                
+      35 +  return uc                                                    
+      36 +}                                                              
+      37 +                                                               
+      38  func (uc *TweetUseCase) CreateTweet(ctx context.Context, userID
+           uuid.UUID, content string) (*domain.Tweet, error) {
+      39    if content == "" {
+      40      return nil, domain.ErrEmptyContent
+
+⏺ Now replace the silent discard with a log call:
+
+⏺ Update(internal/usecase/tweet.go)
+  ⎿  Added 3 lines, removed 1 line
+      62      Content:   t.Content,
+      63      CreatedAt: t.CreatedAt,
+      64    }
+      65 -  _ = uc.publisher.PublishTweetCreated(ctx, evt)               
+      65 +  if err := uc.publisher.PublishTweetCreated(ctx, evt); err != 
+         +nil {                                                          
+      66 +    uc.logger.ErrorContext(ctx, "publish tweet event", "tweet_i
+         +d", t.ID, "err", err)                                          
+      67 +  }                                                            
+      68    return t, nil
+      69  }
+
+⏺ Verify GREEN:
+⏺ Bash(go test ./internal/usecase/... 2>&1)
+  ⎿  ok         uala/internal/usecase   0.435s
+
+⏺ All passing. Now let me do the same for FollowUseCase (same silent discard on
+  line 47). First the test:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/usecase/follow_test.go)
+  ⎿  Added 4 lines
+       1  package usecase_test
+       2  
+       3  import (
+       4 +  "bytes"                                                      
+       5    "context"
+       6 +  "errors"                                                     
+       7 +  "log/slog"                                                   
+       8 +  "strings"                                                    
+       9    "testing"
+      10  
+      11    "github.com/google/uuid"
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/usecase/follow_test.go)
+  ⎿  Added 18 lines
+       81      t.Fatalf("want followeeID %s, got %s", followee, evt.Follo
+           weeID)
+       82    }
+       83  }
+       84 +                                                              
+       85 +func TestFollowUseCase_Follow_PublishErrorIsLogged(t *testing.
+          +T) {                                                          
+       86 +  follower := uuid.New()                                      
+       87 +  followee := uuid.New()                                      
+       88 +  userRepo := &mockUserRepo{getUser: &domain.User{ID: followee
+          +}}                                                            
+       89 +  publisher := &mockFollowPublisher{publishErr: errors.New("ra
+          +bbitmq connection refused")}                                  
+       90 +                                                              
+       91 +  var buf bytes.Buffer                                        
+       92 +  logger := slog.New(slog.NewTextHandler(&buf, nil))          
+       93 +  uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, 
+          +publisher).WithLogger(logger)                                 
+       94 +                                                              
+       95 +  if err := uc.Follow(context.Background(), follower, followee
+          +); err != nil {                                               
+       96 +    t.Fatalf("publish error must not propagate, got: %v", err)
+       97 +  }                                                           
+       98 +  if !strings.Contains(buf.String(), "rabbitmq connection refu
+          +sed") {                                                       
+       99 +    t.Fatalf("expected publish error in log, got: %q", buf.Str
+          +ing())                                                        
+      100 +  }                                                           
+      101 +}                                                             
+
+⏺ Verify RED:
+
+⏺ Bash(go test ./internal/usecase/... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/usecase_test [uala/internal/usecase.test]
+     internal/usecase/follow_test.go:93:73: usecase.NewFollowUseCase(userRepo, 
+     &mockFollowRepo{}, publisher).WithLogger undefined (type 
+     *usecase.FollowUseCase has no field or method WithLogger)
+     FAIL       uala/internal/usecase [build failed]
+     FAIL
+
+⏺ GREEN: implement logging in FollowUseCase:
+
+⏺ Update(internal/usecase/follow.go)
+  ⎿  Added 8 lines, removed 1 line
+      2  
+      3  import (
+      4    "context"
+      5 +  "log/slog"                                                    
+      6    "time"
+      7  
+      8    "github.com/google/uuid"
+     ...
+      13    userRepo   domain.UserRepository
+      14    followRepo domain.FollowRepository
+      15    publisher  domain.FollowEventPublisher
+      16 +  logger     *slog.Logger                                      
+      17  }
+      18  
+      19  func NewFollowUseCase(userRepo domain.UserRepository, followRep
+          o domain.FollowRepository, publisher domain.FollowEventPublishe
+          r) *FollowUseCase {
+      18 -  return &FollowUseCase{userRepo: userRepo, followRepo: followR
+         -epo, publisher: publisher}                                     
+      20 +  return &FollowUseCase{userRepo: userRepo, followRepo: followR
+         +epo, publisher: publisher, logger: slog.Default()}             
+      21  }
+      22  
+      23 +func (uc *FollowUseCase) WithLogger(l *slog.Logger) *FollowUseC
+         +ase {                                                          
+      24 +  uc.logger = l                                                
+      25 +  return uc                                                    
+      26 +}                                                              
+      27 +                                                               
+      28  func (uc *FollowUseCase) Follow(ctx context.Context, followerID
+          , followeeID uuid.UUID) error {
+      29    if followerID == followeeID {
+      30      return domain.ErrSelfFollow
+
+⏺ Update(internal/usecase/follow.go)
+  ⎿  Added 3 lines, removed 1 line
+      51      FollowerID: followerID,
+      52      FolloweeID: followeeID,
+      53    }
+      54 -  _ = uc.publisher.PublishFollowCreated(ctx, evt)              
+      54 +  if err := uc.publisher.PublishFollowCreated(ctx, evt); err !=
+         + nil {                                                         
+      55 +    uc.logger.ErrorContext(ctx, "publish follow event", "follow
+         +er_id", followerID, "followee_id", followeeID, "err", err)     
+      56 +  }                                                            
+      57    return nil
+      58  }
+
+⏺ Verify GREEN — all tests:
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ?          uala/cmd/api    [no test files]
+     ?          uala/internal/domain    [no test files]
+     ok         uala/internal/handler   0.728s
+     … +6 lines (ctrl+o to expand)
+
+⏺ All green. Let me do a quick REFACTOR check — the final state of both files:
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Clean. Gap 5 is fixed:
+
+  - TweetUseCase.CreateTweet and FollowUseCase.Follow now log publisher errors
+  via slog instead of silently discarding them
+  - Both use slog.Default() in production (zero change to main.go) and accept
+  WithLogger(l) for testing
+  - Two new tests (TestTweetUseCase_CreateTweet_PublishErrorIsLogged,
+  TestFollowUseCase_Follow_PublishErrorIsLogged) verify the error message
+  appears in the log
+  - All 45 tests pass
+
+✻ Cogitated for 2m 45s
+
+❯ gap 7                                                                         
+
+⏺ Skill(superpowers:brainstorming)
+  ⎿  Successfully loaded skill
+  Searched for 3 patterns, read 2 files, listed 3 directories (ctrl+o to expand)
+
+⏺ Good context established. Here's what I found:
+
+  - Migrate() in db.go:28 runs 3 CREATE TABLE IF NOT EXISTS statements inline —
+  no versioning, no rollback
+  - A migrations/ directory already exists (with just a .gitkeep) — clearly a
+  placeholder waiting to be used
+  - No migration library is in go.mod yet
+  - setup_test.go calls postgres.Migrate() directly, so that call site needs
+  updating too
+  - The Makefile has no migrate target
+
+  First question: This kata is focused on demonstrating backend engineering
+  knowledge to reviewers. Does the migration solution need to run as part of
+  main.go startup (CLI-less, library-only approach), or are you OK with a
+  separate migrate CLI step that runs before the server starts?
+
+✻ Brewed for 1m 9s
+
+❯ when should you use one or the other?                                         
+
+⏺ Good question. The deciding factor is who controls the deployment environment.
+
+  Library-only (auto-migrate on startup) — the server runs migrations itself
+  before serving traffic.
+  - Good when: you own the infra, it's a simple service, downtime between deploy
+   and ready is acceptable, or you want zero manual steps (common in
+  katas/demos).
+  - Bad when: you have multiple replicas racing to migrate on startup, you need
+  DBAs to review schema changes before they run, or you need a dry-run /
+  rollback step separate from the deploy.
+
+  Separate CLI step (make migrate before go run) — migrations are an explicit,
+  independent operation.
+  - Good when: you have CI/CD pipelines where migrations run before the new
+  binary rolls out, you want human approval before schema changes land, or you
+  have multiple services sharing the DB.
+  - Bad when: it's a dev-only project and the extra step just adds friction with
+   no safety benefit.
+
+  For this kata specifically: reviewers will be looking at whether you
+  understand that production systems need the CLI step. But since the service is
+   a single-binary with no orchestration, auto-migrate on startup is also
+  defensible — and simpler to demo. The real signal reviewers want to see is
+  that migrations are versioned and tracked (i.e., a schema_migrations table
+  exists), not whether you used a CLI or not.
+
+  So: which matters more to you here — showing production-grade separation of
+  concerns, or keeping the demo simple to run?
+
+❯ Separate CLI step                                                             
+
+⏺ Three options worth considering for the CLI approach:
+
+  Option A — golang-migrate (library + CLI)
+  - Most widely used in Go. SQL files only, no Go code in migrations. Simple
+  numbered filenames (000001_create_users.up.sql / .down.sql). Has a pgx/v5
+  driver. CLI is a separate binary you install or invoke via go run.
+  - Trade-off: verbose filenames, requires installing the CLI tool separately.
+
+  Option B — goose (library + CLI)
+  - Also very popular. Supports both SQL files and Go migrations. Simpler
+  filenames (00001_create_users.sql with -- +goose Up / -- +goose Down markers
+  inside). Can embed the CLI in your own cmd/migrate/main.go using its library —
+   no external tool needed.
+  - Trade-off: the in-file markers feel slightly non-standard to some, but the
+  embedded CLI approach is clean for a kata.
+
+  Option C — embed SQL + custom runner (no external lib)
+  - Write the SQL files yourself, embed them with //go:embed, track applied
+  migrations in a schema_migrations table, build your own cmd/migrate/main.go.
+  Zero new dependencies.
+  - Trade-off: you're reimplementing what goose/golang-migrate already do. Fine
+  for showing you understand the concept, but reviewers may see it as
+  reinventing the wheel.
+
+  My recommendation: goose — you get a real, recognisable tool, you can embed
+  the CLI into cmd/migrate/main.go with no external binary install, and it
+  integrates cleanly with pgx/v5 via its database/sql compatibility layer. One
+  go run ./cmd/migrate up and you're done.
+
+  Does goose work for you, or do you prefer one of the others?
+
+❯ b                                                                             
+
+⏺ One more question before I write up the design: should cmd/migrate get the
+  database URL the same way the server does (via infra.LoadConfig() /
+  environment variables), or do you want it to accept the DSN as a CLI flag
+  (--db-url)?
+
+❯ 1                                                                             
+
+⏺ Here's the design. I'll go section by section.
+
+  ---
+  Section 1 — File layout
+
+  migrations/
+    00001_create_users.sql
+    00002_create_tweets.sql
+    00003_create_follows.sql
+
+  cmd/migrate/
+    main.go          ← the CLI: go run ./cmd/migrate [up|down|status]
+
+  Each SQL file uses goose markers:
+
+  -- +goose Up
+  CREATE TABLE users (...);
+
+  -- +goose Down
+  DROP TABLE users;
+
+  The SQL files are embedded into the binary via //go:embed migrations/*.sql in
+  the migrate command — no filesystem dependency at runtime.
+
+  Does this layout look right?
+
+❯ yes                                                                           
+
+⏺ Section 2 — The cmd/migrate/main.go CLI
+
+  func main() {
+      // accepts: up | down | status  (default: up)
+      // reads DB URL via infra.LoadConfig()
+      // opens a *sql.DB (goose uses database/sql, not pgx directly)
+      // calls goose.SetDialect("postgres")
+      // calls goose.Up(db, "migrations") / goose.Down / goose.Status
+  }
+
+  Goose manages a goose_db_version table automatically — that's where versioning
+   lives. The embedded FS is passed to goose so no SQL files need to be present
+  on disk at runtime.
+
+  Usage after this change:
+  go run ./cmd/migrate           # runs all pending up migrations
+  go run ./cmd/migrate status    # shows applied / pending
+  go run ./cmd/migrate down      # rolls back one step
+  make migrate                   # new Makefile target wrapping the above
+
+  The existing postgres.Migrate() function in db.go gets deleted — main.go no
+  longer calls it on startup. setup_test.go in the postgres package keeps
+  calling the old function during integration tests (so we'll replace that call
+  with a direct goose call against the embedded FS instead).
+
+  Does this look right?
+
+❯ yes                                                                           
+
+⏺ Section 3 — Error handling & testing
+
+  The CLI exits with a non-zero code on any error (connection failure, migration
+   failure) so CI can catch it. No retries — if the DB isn't up, the operator
+  fixes it and re-runs.
+
+  For setup_test.go in the postgres integration tests: instead of calling the
+  deleted postgres.Migrate(), it calls goose.Up(db, migrationsFS) directly using
+   the same embedded FS. This keeps tests self-contained — no SQL files need to
+  be on disk when running INTEGRATION=1 go test ./....
+
+  main.go (the server) loses its postgres.Migrate() call entirely. The server
+  assumes the DB is already migrated before it starts — if it isn't, queries
+  will fail fast with clear Postgres errors, which is the correct production
+  behaviour.
+
+  Does this look right?
+❯ yes                                                                           
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Write(docs/superpowers/specs/2026-05-01-versioned-migrations-design.md)
+  ⎿  Wrote 90 lines to
+     docs/superpowers/specs/2026-05-01-versioned-migrations-design.md
+       2 # Versioned Migrations with Goose
+       4 **Gap:** 7 — Inline startup migrations replaced with versioned, 
+       5 rollback-capable schema management.
+       6 ---
+       8 ## Problem
+      10 `postgres.Migrate()` in `internal/repository/postgres/db.go` run
+         s `CREATE TABLE IF NOT EXISTS` statements directly on every serv
+         ability, and no separation between the migration step and the se
+         d silently with no audit trail and cannot be undone without manu
+         al SQL.
+     … +103 lines (ctrl+o to expand)
+
+⏺ Spec self-review:
+
+  - No placeholders or TBDs
+  - pgx/stdlib mentioned for the database/sql bridge — consistent with the
+  pgx/v5 dep already in go.mod
+  - Scope is focused: one CLI, three SQL files, four changed call sites
+  - All three sections (layout, CLI, error/testing) are internally consistent
+
+⏺ Spec written to
+  docs/superpowers/specs/2026-05-01-versioned-migrations-design.md. Please
+  review it and let me know if you want any changes before we move to the
+  implementation plan.
+
+✻ Worked for 32s
+
+❯ continue                                                                      
+
+⏺ Skill(superpowers:writing-plans)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the writing-plans skill to create the implementation plan.
+
+  Read 4 files (ctrl+o to expand)
+
+⏺ Write(docs/superpowers/plans/2026-05-01-versioned-migrations.md)
+  ⎿  Wrote 395 lines to
+     docs/superpowers/plans/2026-05-01-versioned-migrations.md
+      2 # Versioned Migrations Implementation Plan
+        bagent-driven-development (recommended) or superpowers:executing-
+        plans to implement this plan task-by-task. Steps use checkbox (`-
+      4  [ ]`) syntax for tracking.
+      5 **Goal:** Replace the inline `postgres.Migrate()` startup functio
+        grate` CLI.ioned goose SQL migrations run via a dedicated `cmd/mi
+      7 **Architecture:** SQL migration files live in `migrations/` and a
+        re embedded via `//go:embed`. A `migrations` Go package exports t
+        a.LoadConfig()`, opens a `*sql.DB` using the pgx stdlib bridge, a
+        nd delegates to goo
+     … +420 lines (ctrl+o to expand)
+
+⏺ Self-review:
+
+  1. Spec coverage: All 7 spec requirements have a task — dependency, 3 SQL
+  files, CLI, delete Migrate(), update main.go, update setup_test.go, Makefile.
+  ✅
+  2. Placeholder scan: No TBDs, all code blocks are complete. ✅
+  3. Type consistency: migrations.FS defined in Task 2 and used in Tasks 3
+  and 4. goose.SetBaseFS + dir "." consistent across both callers.
+  stdlib.OpenDBFromPool in Task 3, sql.Open("pgx", ...) in Task 4 — both valid
+  paths to *sql.DB. ✅
+
+⏺ Plan complete and saved to
+  docs/superpowers/plans/2026-05-01-versioned-migrations.md.
+
+  Two execution options:
+
+  1. Subagent-Driven (recommended) — fresh subagent per task, I review between
+  tasks
+
+  2. Inline Execution — execute tasks in this session with checkpoints
+
+  Which approach?
+
+✻ Churned for 2m 24s
+
+❯ 2                                                                             
+
+⏺ Skill(superpowers:executing-plans)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the executing-plans skill to implement this plan.
+
+  Let me review the plan critically before starting.
+  Read 1 file (ctrl+o to expand)
+
+⏺ Plan looks solid. One thing to verify after go get: whether goose.RunContext
+  exists in the installed version — I'll check and adapt if needed. No git repo
+  in this project so I'll skip the commit step.
+
+  Starting execution.
+
+⏺ Bash(go get github.com/pressly/goose/v3 2>&1)
+  ⎿  go: downloading github.com/pressly/goose/v3 v3.27.1
+     go: downloading github.com/pressly/goose v2.7.0+incompatible
+     go: downloading github.com/sethvargo/go-retry v0.3.0
+     … +15 lines (ctrl+o to expand)
+
+⏺ goose v3.27.1 installed. Let me quickly check that goose.RunContext exists in
+  this version before proceeding.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ goose.RunContext exists. Tidying and moving on.
+
+⏺ Bash(go mod tidy 2>&1)
+  ⎿  go: downloading github.com/klauspost/compress v1.18.5
+     go: downloading github.com/kylelemons/godebug v1.1.0
+
+⏺ Write(migrations/embed.go)
+  ⎿  Wrote 6 lines to migrations/embed.go
+      1 package migrations
+      2 
+      3 import "embed"
+      4 
+      5 //go:embed *.sql
+      6 var FS embed.FS
+
+⏺ Write(migrations/00001_create_users.sql)
+  ⎿  Wrote 9 lines to migrations/00001_create_users.sql
+      1 -- +goose Up
+      2 CREATE TABLE users (
+      3     id UUID PRIMARY KEY,
+      4     username TEXT UNIQUE NOT NULL,
+      5     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      6 );
+      7 
+      8 -- +goose Down
+      9 DROP TABLE users;
+
+⏺ Write(migrations/00002_create_tweets.sql)
+  ⎿  Wrote 10 lines to migrations/00002_create_tweets.sql
+       1 -- +goose Up
+       2 CREATE TABLE tweets (
+       3     id UUID PRIMARY KEY,
+       4     user_id UUID NOT NULL REFERENCES users(id),
+       5     content TEXT NOT NULL,
+       6     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+       7 );
+       8 
+       9 -- +goose Down
+      10 DROP TABLE tweets;
+
+⏺ Write(migrations/00003_create_follows.sql)
+  ⎿  Wrote 10 lines to migrations/00003_create_follows.sql
+       1 -- +goose Up
+       2 CREATE TABLE follows (
+       3     follower_id UUID NOT NULL REFERENCES users(id),
+       4     followee_id UUID NOT NULL REFERENCES users(id),
+       5     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+       6     PRIMARY KEY (follower_id, followee_id)
+       7 );
+       8 
+       9 -- +goose Down
+      10 DROP TABLE follows;
+⏺ Bash(go build ./migrations/... 2>&1)
+  ⎿  (No output)
+
+⏺ Write(internal/repository/postgres/setup_test.go)
+  ⎿  Added 12 lines, removed 1 line
+       6    "testing"
+       7  
+       8    "github.com/jackc/pgx/v5/pgxpool"
+       9 +  "github.com/jackc/pgx/v5/stdlib"                             
+      10 +  "github.com/pressly/goose/v3"                                
+      11    "uala/internal/repository/postgres"
+      12 +  "uala/migrations"                                            
+      13  )
+      14  
+      15  var testDB *pgxpool.Pool
+     ...
+      27      panic("connect: " + err.Error())
+      28    }
+      29    testDB = pool
+      27 -  if err := postgres.Migrate(context.Background(), pool); err !
+         -= nil {                                                        
+      30 +                                                               
+      31 +  sqlDB := stdlib.OpenDBFromPool(pool)                         
+      32 +  defer sqlDB.Close()                                          
+      33 +  goose.SetBaseFS(migrations.FS)                               
+      34 +  if err := goose.SetDialect("postgres"); err != nil {         
+      35 +    panic("goose dialect: " + err.Error())                     
+      36 +  }                                                            
+      37 +  if err := goose.Up(sqlDB, "."); err != nil {                 
+      38      panic("migrate: " + err.Error())
+      39    }
+      40 +                                                               
+      41    code := m.Run()
+      42    pool.Close()
+      43    os.Exit(code)
+
+⏺ Bash(go build ./internal/repository/postgres/... 2>&1)
+  ⎿  (No output)
+
+⏺ Bash(mkdir -p /Users/gonza/Katas/uala/cmd/migrate)
+  ⎿  Done
+
+⏺ Write(cmd/migrate/main.go)
+  ⎿  Wrote 41 lines to cmd/migrate/main.go
+       1 package main
+       2 
+       3 import (
+       4        "context"
+       5        "database/sql"
+       6        "log"
+       7        "os"
+       8 
+       9        _ "github.com/jackc/pgx/v5/stdlib"
+      10        "github.com/pressly/goose/v3"
+     … +32 lines (ctrl+o to expand)
+
+⏺ Bash(go build ./cmd/migrate/... 2>&1)
+  ⎿  Error: Exit code 1
+     cmd/migrate/main.go:10:2: no required module provides package 
+     github.com/pressly/goose/v3; to add it:
+        go get github.com/pressly/goose/v3
+
+⏺ goose is marked indirect — now that cmd/migrate imports it directly, go mod 
+  tidy will promote it.
+
+⏺ Bash(go mod tidy 2>&1 && go build ./cmd/migrate/... 2>&1)
+  ⎿  go: finding module for package github.com/pressly/goose/v3
+     go: found github.com/pressly/goose/v3 in github.com/pressly/goose/v3 v
+     3.27.1
+     … +9 lines (ctrl+o to expand)
+
+⏺ Bash(go build ./cmd/migrate/... 2>&1)
+  ⎿  (No output)
+
+⏺ Write(internal/repository/postgres/db.go)
+  ⎿  Removed 28 lines
+      24    }
+      25    return pool, nil
+      26  }
+      27 -                                                               
+      28 -func Migrate(ctx context.Context, db *pgxpool.Pool) error {    
+      29 -  stmts := []string{                                           
+      30 -    `CREATE TABLE IF NOT EXISTS users (                        
+      31 -      id UUID PRIMARY KEY,                                     
+      32 -      username TEXT UNIQUE NOT NULL,                           
+      33 -      created_at TIMESTAMPTZ NOT NULL DEFAULT now()            
+      34 -    )`,                                                        
+      35 -    `CREATE TABLE IF NOT EXISTS tweets (                       
+      36 -      id UUID PRIMARY KEY,                                     
+      37 -      user_id UUID NOT NULL REFERENCES users(id),              
+      38 -      content TEXT NOT NULL,                                   
+      39 -      created_at TIMESTAMPTZ NOT NULL DEFAULT now()            
+      40 -    )`,                                                        
+      41 -    `CREATE TABLE IF NOT EXISTS follows (                      
+      42 -      follower_id UUID NOT NULL REFERENCES users(id),          
+      43 -      followee_id UUID NOT NULL REFERENCES users(id),          
+      44 -      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),           
+      45 -      PRIMARY KEY (follower_id, followee_id)                   
+      46 -    )`,                                                        
+      47 -  }                                                            
+      48 -  for _, stmt := range stmts {                                 
+      49 -    if _, err := db.Exec(ctx, stmt); err != nil {              
+      50 -      return fmt.Errorf("migrate: %w", err)                    
+      51 -    }                                                          
+      52 -  }                                                            
+      53 -  return nil                                                   
+      54 -}                                                              
+
+⏺ Update(cmd/api/main.go)
+  ⎿  Removed 4 lines
+      28    }
+      29    defer db.Close()
+      30  
+      31 -  if err := postgres.Migrate(ctx, db); err != nil {            
+      32 -    log.Fatal("migrate:", err)                                 
+      33 -  }                                                            
+      34 -                                                               
+      31    go func() {
+      32      ticker := time.NewTicker(5 * time.Second)
+      33      defer ticker.Stop()
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/handler_test [uala/internal/handler.test]
+     internal/handler/setup_test.go:40:21: undefined: postgres.Migrate
+     ?          uala/cmd/api    [no test files]
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     FAIL       uala/internal/handler [build failed]
+     ?          uala/internal/infra     [no test files]
+     ok         uala/internal/messaging/rabbitmq        1.438s
+     ok         uala/internal/metrics   0.675s
+     … +5 lines (ctrl+o to expand)
+
+⏺ There's also a handler/setup_test.go with the same call. Let me fix that too.
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/handler/setup_test.go)
+  ⎿  Added 3 lines
+       7    "testing"
+       8  
+       9    "github.com/jackc/pgx/v5/pgxpool"
+      10 +  "github.com/jackc/pgx/v5/stdlib"                             
+      11 +  "github.com/pressly/goose/v3"                                
+      12    "github.com/redis/go-redis/v9"
+      13    "uala/internal/handler"
+      14    "uala/internal/repository/postgres"
+      15    redisrepo "uala/internal/repository/redis"
+      16    "uala/internal/usecase"
+      17 +  "uala/migrations"                                            
+      18  )
+      19  
+      20  var (
+
+⏺ Update(internal/handler/setup_test.go)
+  ⎿  Added 9 lines, removed 2 lines
+      40    if err != nil {
+      41      panic("connect: " + err.Error())
+      42    }
+      43 -  if err := postgres.Migrate(context.Background(), pool); err !
+         -= nil {                                                        
+      43 +  testDB = pool                                                
+      44 +                                                               
+      45 +  sqlDB := stdlib.OpenDBFromPool(pool)                         
+      46 +  defer sqlDB.Close()                                          
+      47 +  goose.SetBaseFS(migrations.FS)                               
+      48 +  if err := goose.SetDialect("postgres"); err != nil {         
+      49 +    panic("goose dialect: " + err.Error())                     
+      50 +  }                                                            
+      51 +  if err := goose.Up(sqlDB, "."); err != nil {                 
+      52      panic("migrate: " + err.Error())
+      53    }
+      46 -  testDB = pool                                                
+      54  
+      55    rdb, err := redisrepo.Connect(context.Background(), redisURL)
+      56    if err != nil {
+
+⏺ Bash(go build ./... 2>&1 && go test ./... 2>&1)
+  ⎿  ?          uala/cmd/api    [no test files]
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ All green. Moving to the Makefile.
+
+⏺ Write(Makefile)
+  ⎿  Added 4 lines, removed 1 line
+      1 -.PHONY: up down run test                                        
+      1 +.PHONY: up down run migrate test                                
+      2  
+      3  up:
+      4    docker-compose up -d
+     ...
+       9  run:
+      10    go run ./cmd/api/...
+      11  
+      12 +migrate:                                                       
+      13 +  go run ./cmd/migrate                                         
+      14 +                                                               
+      15  test:
+      16    go test ./...
+
+⏺ All 6 tasks done. Here's what changed:
+
+  ┌────────────────────────────────────────────┬─────────────────────────────┐
+  │                    File                    │           Change            │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │                                            │ github.com/pressly/goose/v3 │
+  │ go.mod                                     │  v3.27.1 added as direct    │
+  │                                            │ dep                         │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │ migrations/embed.go                        │ New — exports var FS        │
+  │                                            │ embed.FS                    │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │ migrations/00001–00003.sql                 │ New — versioned Up/Down SQL │
+  │                                            │  with goose markers         │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │                                            │ New — CLI: reads            │
+  │ cmd/migrate/main.go                        │ infra.LoadConfig(), runs    │
+  │                                            │ goose.RunContext            │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │ internal/repository/postgres/db.go         │ Migrate() deleted           │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │ cmd/api/main.go                            │ postgres.Migrate() call     │
+  │                                            │ removed                     │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │ internal/repository/postgres/setup_test.go │ Uses goose.Up via           │
+  │                                            │ stdlib.OpenDBFromPool       │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │ internal/handler/setup_test.go             │ Same — also had the old     │
+  │                                            │ postgres.Migrate call       │
+  ├────────────────────────────────────────────┼─────────────────────────────┤
+  │ Makefile                                   │ make migrate target added   │
+  └────────────────────────────────────────────┴─────────────────────────────┘
+
+  Usage:
+  make migrate          # apply all pending migrations
+  go run ./cmd/migrate status   # show applied / pending
+  go run ./cmd/migrate down     # roll back one version
+
+✻ Baked for 3m 14s
+
+❯ gap 3                                                                         
+
+⏺ Skill(superpowers:test-driven-development)
+  ⎿  Successfully loaded skill
+
+⏺ Let me explore the current main.go and consumer to understand what needs
+  changing before writing the first test.
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Good context. The consumers already check ctx.Done() — the only problems are:
+  1. main.go passes context.Background() (never cancels) to consumers
+  2. http.ListenAndServe blocks forever with no shutdown path
+
+  The testable extraction: pull serve(ctx, addr, handler) into cmd/api/serve.go
+  and test that cancelling the context shuts the server down cleanly. Let me
+  write the failing test first.
+
+  RED:
+
+⏺ Write(cmd/api/serve_test.go)
+  ⎿  Wrote 79 lines to cmd/api/serve_test.go
+       1 package main
+       2 
+       3 import (
+       4        "context"
+       5        "net/http"
+       6        "testing"
+       7        "time"
+       8 )
+       9 
+      10 func TestServe_ShutsDownOnContextCancel(t *testing.T) {
+     … +72 lines (ctrl+o to expand)
+
+⏺ The second test needs the actual bound address. Let me redesign: serve accepts
+   a net.Listener so the caller binds the port and tests can read ln.Addr()
+  before starting.
+
+⏺ Write(cmd/api/serve_test.go)
+  ⎿  Added 14 lines, removed 6 lines
+      2  
+      3  import (
+      4    "context"
+      5 +  "net"                                                         
+      6    "net/http"
+      7    "testing"
+      8    "time"
+     ...
+      12    ctx, cancel := context.WithCancel(context.Background())
+      13    defer cancel()
+      14  
+      15 +  ln, err := net.Listen("tcp", "127.0.0.1:0")                  
+      16 +  if err != nil {                                              
+      17 +    t.Fatal(err)                                               
+      18 +  }                                                            
+      19 +                                                               
+      20    handler := http.HandlerFunc(func(w http.ResponseWriter, r *ht
+          tp.Request) {
+      21      w.WriteHeader(http.StatusOK)
+      22    })
+      23  
+      24    done := make(chan error, 1)
+      25    go func() {
+      20 -    done <- serve(ctx, "127.0.0.1:0", handler)                 
+      26 +    done <- serve(ctx, ln, handler)                            
+      27    }()
+      28  
+      23 -  time.Sleep(30 * time.Millisecond)                            
+      29    cancel()
+      30  
+      31    select {
+     ...
+      42    ctx, cancel := context.WithCancel(context.Background())
+      43    defer cancel()
+      44  
+      45 +  ln, err := net.Listen("tcp", "127.0.0.1:0")                  
+      46 +  if err != nil {                                              
+      47 +    t.Fatal(err)                                               
+      48 +  }                                                            
+      49 +  addr := ln.Addr().String()                                   
+      50 +                                                               
+      51    requestStarted := make(chan struct{})
+      52    requestDone := make(chan struct{})
+      53  
+     ...
+      58      close(requestDone)
+      59    })
+      60  
+      50 -  addrCh := make(chan string, 1)                               
+      61    done := make(chan error, 1)
+      62    go func() {
+      53 -    done <- serve(ctx, "127.0.0.1:0", handler, addrCh)         
+      63 +    done <- serve(ctx, ln, handler)                            
+      64    }()
+      65  
+      56 -  addr := <-addrCh                                             
+      57 -                                                               
+      66    go func() {
+      67      http.Get("http://" + addr + "/") //nolint:errcheck
+      68    }()
+
+⏺ Verify RED:
+
+⏺ Bash(go test ./cmd/api/... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/cmd/api [uala/cmd/api.test]
+     cmd/api/serve_test.go:26:11: undefined: serve
+     cmd/api/serve_test.go:63:11: undefined: serve
+     FAIL       uala/cmd/api [build failed]
+     FAIL
+
+⏺ Fails for the right reason. GREEN: implement serve and update main.go.
+
+⏺ Write(cmd/api/serve.go)
+  ⎿  Wrote 27 lines to cmd/api/serve.go
+      1 package main
+      2 
+      3 import (
+      4         "context"
+      5         "errors"
+      6         "net"
+      7         "net/http"
+      8         "time"
+      9 )
+     … +19 lines (ctrl+o to expand)
+
+⏺ Verify GREEN:
+⏺ Bash(go test ./cmd/api/... -v -run "TestServe" 2>&1)
+  ⎿  === RUN   TestServe_ShutsDownOnContextCancel
+     --- PASS: TestServe_ShutsDownOnContextCancel (0.00s)
+     === RUN   TestServe_CompletesInFlightRequestBeforeShutdown
+     … +3 lines (ctrl+o to expand)
+
+⏺ Both pass. Now wire signal.NotifyContext and the new serve into main.go.
+
+  RED for main.go — there's no test to write here (signal handling in main() is
+  not unit-testable), but the compile check confirms correctness. Update main.go
+   to use signal.NotifyContext and serve:
+
+⏺ Update(cmd/api/main.go)
+  ⎿  Added 4 lines, removed 1 line
+       3  import (
+       4    "context"
+       5    "log"
+       6 -  "net/http"                                                   
+       6 +  "net"                                                        
+       7 +  "os"                                                         
+       8 +  "os/signal"                                                  
+       9 +  "syscall"                                                    
+      10    "time"
+      11  
+      12    "github.com/jackc/pgx/v5/pgxpool"
+
+⏺ Update(cmd/api/main.go)
+  ⎿  Added 2 lines, removed 1 line
+      21  
+      22  func main() {
+      23    cfg := infra.LoadConfig()
+      24 -  ctx := context.Background()                                  
+      24 +  ctx, stop := signal.NotifyContext(context.Background(), os.In
+         +terrupt, syscall.SIGTERM)                                      
+      25 +  defer stop()                                                 
+      26  
+      27    db, err := postgres.Connect(ctx, cfg.DatabaseURL, func(c *pgx
+          pool.Config) {
+      28      c.ConnConfig.Tracer = &metrics.PgxTracer{}
+
+⏺ Update(cmd/api/main.go)
+  ⎿  Added 5 lines, removed 1 line
+      100      handler.NewTimelineHandler(timelineUC),
+      101    )
+      102  
+      103 +  ln, err := net.Listen("tcp", ":"+cfg.Port)                  
+      104 +  if err != nil {                                             
+      105 +    log.Fatal("listen:", err)                                 
+      106 +  }                                                           
+      107    log.Printf("listening on :%s", cfg.Port)
+      104 -  if err := http.ListenAndServe(":"+cfg.Port, router); err != 
+          -nil {                                                         
+      108 +  if err := serve(ctx, ln, router); err != nil {              
+      109      log.Fatal(err)
+      110    }
+      111  }
+
+⏺ Verify GREEN — full build and tests:
+
+⏺ Bash(go build ./... 2>&1 && go test ./... 2>&1)
+  ⎿  ok         uala/cmd/api    0.597s
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ All green. Let me do a quick REFACTOR check on the final state of main.go:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Clean. Gap 3 is done:
+
+  What changed:
+
+  ┌───────────────────────┬──────────────────────────────────────────────────┐
+  │         File          │                      Change                      │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │                       │ New — serve(ctx, ln, handler) gracefully shuts   │
+  │ cmd/api/serve.go      │ down via Shutdown with 10s timeout when ctx is   │
+  │                       │ cancelled                                        │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │ cmd/api/serve_test.go │ New — two tests: shutdown on cancel, in-flight   │
+  │                       │ request completes before shutdown                │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │                       │ signal.NotifyContext(…, SIGINT, SIGTERM)         │
+  │ cmd/api/main.go       │ replaces context.Background(); net.Listen +      │
+  │                       │ serve() replace http.ListenAndServe              │
+  └───────────────────────┴──────────────────────────────────────────────────┘
+
+  On SIGTERM/SIGINT: the context cancels → consumers exit their select loops,
+  and the HTTP server drains in-flight requests (up to 10s) then closes.
+
+✻ Churned for 2m 32s

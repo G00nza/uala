@@ -1,0 +1,1481 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ quiero iterar el grafana, no todas las metricas tienen graficos, el grafico   
+  de rabbir success rate no funciona, y quiero poder acceder a los graficos sin 
+   tener que loggearme                                                          
+
+⏺ Voy a revisar la configuración actual de Grafana antes de hacer cambios.
+
+  Searched for 1 pattern, read 2 files, listed 1 directory (ctrl+o to expand)
+
+⏺ Ahora voy a ver qué métricas están expuestas en el código para saber qué
+  paneles faltan.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Voy a ver el docker-compose para entender cómo está configurado Grafana.
+
+⏺ Bash(find /Users/gonza/Katas/uala -name "docker-compose*.yml" -o -name
+      "docker-compose*.yaml" | xargs ls -la 2>/dev/null)
+  ⎿  -rw-r--r--@ 1 gonza  staff  1619 Apr 30 21:59 /Users/gonza/Katas/uala/
+     docker-compose.yml
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Tengo todo lo que necesito. Los problemas son:
+  1. RabbitMQ success rate — la query divide por cero cuando no hay mensajes
+  (sin by (queue) y sin guard de denominador 0)
+  2. Paneles faltantes — http_requests_total, fanout_duration_seconds,
+  db_query_duration_seconds, db_connections_active, db_errors_total,
+  fanout_dead_letter_total
+  3. Login — solo hay que agregar GF_AUTH_ANONYMOUS_ENABLED al docker-compose
+
+  Voy a aplicar los tres cambios.
+
+⏺ Update(docker-compose.yml)
+  ⎿  Added 2 lines
+      55      container_name: uala_grafana
+      56      environment:
+      57        GF_SECURITY_ADMIN_PASSWORD: admin
+      58 +      GF_AUTH_ANONYMOUS_ENABLED: "true"                        
+      59 +      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer                       
+      60      volumes:
+      61        - ./monitoring/grafana/provisioning:/etc/grafana/provisio
+          ning
+      62        - ./monitoring/grafana/dashboards:/var/lib/grafana/dashbo
+          ards
+
+⏺ Ahora el dashboard completo con todos los paneles y el fix de RabbitMQ:
+
+⏺ Write(monitoring/grafana/dashboards/uala.json)
+  ⎿  Added 115 lines, removed 9 lines
+      36      },
+      37      {
+      38        "datasource": { "type": "prometheus", "uid": "prometheus"
+           },
+      39 -      "fieldConfig": { "defaults": { "unit": "percentunit", "mi
+         -n": 0, "max": 1 }, "overrides": [] },                          
+      39 +      "fieldConfig": {                                         
+      40 +        "defaults": { "unit": "reqps" },                       
+      41 +        "overrides": []                                        
+      42 +      },                                                       
+      43        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      44        "id": 2,
+      45        "targets": [
+      46          {
+      44 -          "expr": "rate(timeline_cache_hits_total[5m]) / (rate(
+         -timeline_cache_hits_total[5m]) + rate(timeline_cache_misses_tot
+         -al[5m]))",                                                     
+      47 +          "expr": "sum by (path, status) (rate(http_requests_to
+         +tal[5m]))",                                                    
+      48 +          "legendFormat": "{{path}} {{status}}"                
+      49 +        }                                                      
+      50 +      ],                                                       
+      51 +      "title": "HTTP Request Rate by Endpoint & Status",       
+      52 +      "type": "timeseries"                                     
+      53 +    },                                                         
+      54 +    {                                                          
+      55 +      "datasource": { "type": "prometheus", "uid": "prometheus"
+         + },                                                            
+      56 +      "fieldConfig": { "defaults": { "unit": "percentunit", "mi
+         +n": 0, "max": 1 }, "overrides": [] },                          
+      57 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },          
+      58 +      "id": 3,                                                 
+      59 +      "targets": [                                             
+      60 +        {                                                      
+      61 +          "expr": "rate(timeline_cache_hits_total[5m]) / clamp_
+         +min(rate(timeline_cache_hits_total[5m]) + rate(timeline_cache_m
+         +isses_total[5m]), 1e-9)",                                      
+      62            "legendFormat": "Cache Hit Rate"
+      63          }
+      64        ],
+     ...
+      68      {
+      69        "datasource": { "type": "prometheus", "uid": "prometheus"
+           },
+      70        "fieldConfig": { "defaults": { "unit": "short" }, "overri
+          des": [] },
+      54 -      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },          
+      55 -      "id": 3,                                                 
+      71 +      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },         
+      72 +      "id": 4,                                                 
+      73        "targets": [
+      74          {
+      75            "expr": "rabbitmq_queue_depth",
+     ...
+       82      {
+       83        "datasource": { "type": "prometheus", "uid": "prometheus
+           " },
+       84        "fieldConfig": { "defaults": { "unit": "percentunit", "m
+           in": 0, "max": 1 }, "overrides": [] },
+       68 -      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },        
+       69 -      "id": 4,                                                
+       85 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },        
+       86 +      "id": 5,                                                
+       87        "targets": [
+       88          {
+       72 -          "expr": "rate(rabbitmq_messages_processed_total[5m])
+          - / (rate(rabbitmq_messages_processed_total[5m]) + rate(rabbitm
+          -q_messages_failed_total[5m]))",                               
+       73 -          "legendFormat": "Success Rate {{queue}}"            
+       89 +          "expr": "sum by (queue) (rate(rabbitmq_messages_proc
+          +essed_total[5m])) / clamp_min(sum by (queue) (rate(rabbitmq_me
+          +ssages_processed_total[5m])) + sum by (queue) (rate(rabbitmq_m
+          +essages_failed_total[5m])), 1e-9)",                           
+       90 +          "legendFormat": "{{queue}}"                         
+       91          }
+       92        ],
+       93        "title": "RabbitMQ Consumer Success Rate",
+       94        "type": "timeseries"
+       95 +    },                                                        
+       96 +    {                                                         
+       97 +      "datasource": { "type": "prometheus", "uid": "prometheus
+          +" },                                                          
+       98 +      "fieldConfig": { "defaults": { "unit": "s" }, "overrides
+          +": [] },                                                      
+       99 +      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },       
+      100 +      "id": 6,                                                
+      101 +      "options": { "legend": { "calcs": ["p50", "p95", "p99"],
+          + "displayMode": "table", "placement": "bottom" } },           
+      102 +      "targets": [                                            
+      103 +        {                                                     
+      104 +          "expr": "histogram_quantile(0.50, rate(fanout_durati
+          +on_seconds_bucket[5m]))",                                     
+      105 +          "legendFormat": "p50"                               
+      106 +        },                                                    
+      107 +        {                                                     
+      108 +          "expr": "histogram_quantile(0.95, rate(fanout_durati
+          +on_seconds_bucket[5m]))",                                     
+      109 +          "legendFormat": "p95"                               
+      110 +        },                                                    
+      111 +        {                                                     
+      112 +          "expr": "histogram_quantile(0.99, rate(fanout_durati
+          +on_seconds_bucket[5m]))",                                     
+      113 +          "legendFormat": "p99"                               
+      114 +        }                                                     
+      115 +      ],                                                      
+      116 +      "title": "Fanout Duration p50/p95/p99",                 
+      117 +      "type": "timeseries"                                    
+      118 +    },                                                        
+      119 +    {                                                         
+      120 +      "datasource": { "type": "prometheus", "uid": "prometheus
+          +" },                                                          
+      121 +      "fieldConfig": { "defaults": { "unit": "s" }, "overrides
+          +": [] },                                                      
+      122 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },        
+      123 +      "id": 7,                                                
+      124 +      "options": { "legend": { "calcs": ["p50", "p95", "p99"],
+          + "displayMode": "table", "placement": "bottom" } },           
+      125 +      "targets": [                                            
+      126 +        {                                                     
+      127 +          "expr": "histogram_quantile(0.50, sum(rate(db_query_
+          +duration_seconds_bucket[5m])) by (le, operation))",           
+      128 +          "legendFormat": "p50 {{operation}}"                 
+      129 +        },                                                    
+      130 +        {                                                     
+      131 +          "expr": "histogram_quantile(0.95, sum(rate(db_query_
+          +duration_seconds_bucket[5m])) by (le, operation))",           
+      132 +          "legendFormat": "p95 {{operation}}"                 
+      133 +        },                                                    
+      134 +        {                                                     
+      135 +          "expr": "histogram_quantile(0.99, sum(rate(db_query_
+          +duration_seconds_bucket[5m])) by (le, operation))",           
+      136 +          "legendFormat": "p99 {{operation}}"                 
+      137 +        }                                                     
+      138 +      ],                                                      
+      139 +      "title": "DB Query Duration by Operation",              
+      140 +      "type": "timeseries"                                    
+      141 +    },                                                        
+      142 +    {                                                         
+      143 +      "datasource": { "type": "prometheus", "uid": "prometheus
+          +" },                                                          
+      144 +      "fieldConfig": { "defaults": { "unit": "short" }, "overr
+          +ides": [] },                                                  
+      145 +      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 24 },        
+      146 +      "id": 8,                                                
+      147 +      "options": { "reduceOptions": { "calcs": ["lastNotNull"]
+          + }, "orientation": "auto", "textMode": "auto", "colorMode": "b
+          +ackground", "graphMode": "area" },                            
+      148 +      "targets": [                                            
+      149 +        {                                                     
+      150 +          "expr": "db_connections_active",                    
+      151 +          "legendFormat": "Active Connections"                
+      152 +        }                                                     
+      153 +      ],                                                      
+      154 +      "title": "DB Active Connections",                       
+      155 +      "type": "stat"                                          
+      156 +    },                                                        
+      157 +    {                                                         
+      158 +      "datasource": { "type": "prometheus", "uid": "prometheus
+          +" },                                                          
+      159 +      "fieldConfig": { "defaults": { "unit": "short" }, "overr
+          +ides": [] },                                                  
+      160 +      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 24 },        
+      161 +      "id": 9,                                                
+      162 +      "targets": [                                            
+      163 +        {                                                     
+      164 +          "expr": "sum by (type) (rate(db_errors_total[5m]))",
+      165 +          "legendFormat": "{{type}}"                          
+      166 +        }                                                     
+      167 +      ],                                                      
+      168 +      "title": "DB Error Rate by Type",                       
+      169 +      "type": "timeseries"                                    
+      170 +    },                                                        
+      171 +    {                                                         
+      172 +      "datasource": { "type": "prometheus", "uid": "prometheus
+          +" },                                                          
+      173 +      "fieldConfig": { "defaults": { "unit": "short" }, "overr
+          +ides": [] },                                                  
+      174 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },        
+      175 +      "id": 10,                                               
+      176 +      "targets": [                                            
+      177 +        {                                                     
+      178 +          "expr": "sum(increase(fanout_dead_letter_total[5m]))
+          +",                                                            
+      179 +          "legendFormat": "Dead Letters (5m)"                 
+      180 +        }                                                     
+      181 +      ],                                                      
+      182 +      "title": "Fanout Dead Letters",                         
+      183 +      "type": "timeseries"                                    
+      184      }
+      185    ],
+      186    "refresh": "30s",
+     ...
+      192    "timezone": "browser",
+      193    "title": "Uala — System Metrics",
+      194    "uid": "uala-metrics",
+       89 -  "version": 1                                                
+      195 +  "version": 2                                                
+      196  }
+
+⏺ Para que tome efecto el acceso anónimo necesitás recrear el container de
+  Grafana:
+
+  docker compose up -d --force-recreate grafana
+
+  Resumen de cambios:
+
+  docker-compose.yml — agregadas dos env vars para acceso anónimo sin login:
+  - GF_AUTH_ANONYMOUS_ENABLED: "true"
+  - GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+
+  uala.json — dashboard pasó de 4 a 10 paneles:
+
+  ┌─────────────────────────────────┬───────────────────────────────────────┐
+  │              Panel              │               Fix/Nuevo               │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ HTTP Latency p50/p95/p99        │ sin cambios                           │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ HTTP Request Rate by Endpoint & │ nuevo                                 │
+  │  Status                         │                                       │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ Timeline Cache Hit Rate         │ fix: clamp_min para evitar división   │
+  │                                 │ por cero                              │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ RabbitMQ Queue Depth            │ sin cambios                           │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ RabbitMQ Consumer Success Rate  │ fix: sum by (queue) + clamp_min en    │
+  │                                 │ denominador                           │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ Fanout Duration p50/p95/p99     │ nuevo                                 │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ DB Query Duration by Operation  │ nuevo                                 │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ DB Active Connections (stat)    │ nuevo                                 │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ DB Error Rate by Type           │ nuevo                                 │
+  ├─────────────────────────────────┼───────────────────────────────────────┤
+  │ Fanout Dead Letters             │ nuevo                                 │
+  └─────────────────────────────────┴───────────────────────────────────────┘
+
+✻ Brewed for 1m 30s
+
+❯ quiero estructurarlo un poco y separar los graficos en secciones, primero     
+  metricas http, luego rabbit                                                   
+
+⏺ Voy a agregar paneles de tipo row para separar las secciones y reordenar los
+  paneles con las posiciones y correctas.
+
+⏺ Write(monitoring/grafana/dashboards/uala.json)
+  ⎿  Added 72 lines, removed 50 lines
+       9    "links": [],
+      10    "panels": [
+      11      {
+      12 +      "collapsed": false,                                      
+      13 +      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },          
+      14 +      "id": 100,                                               
+      15 +      "title": "HTTP",                                         
+      16 +      "type": "row"                                            
+      17 +    },                                                         
+      18 +    {                                                          
+      19        "datasource": { "type": "prometheus", "uid": "prometheus"
+           },
+      13 -      "fieldConfig": {                                         
+      14 -        "defaults": { "unit": "s" },                           
+      15 -        "overrides": []                                        
+      16 -      },                                                       
+      17 -      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },          
+      20 +      "fieldConfig": { "defaults": { "unit": "s" }, "overrides"
+         +: [] },                                                        
+      21 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },          
+      22        "id": 1,
+      23        "options": { "legend": { "calcs": ["p50", "p95", "p99"], 
+          "displayMode": "table", "placement": "bottom" } },
+      24        "targets": [
+     ...
+      35            "legendFormat": "p99 {{path}}"
+      36          }
+      37        ],
+      34 -      "title": "HTTP Latency p50/p95/p99 by Endpoint",         
+      38 +      "title": "Latency p50/p95/p99 by Endpoint",              
+      39        "type": "timeseries"
+      40      },
+      41      {
+      42        "datasource": { "type": "prometheus", "uid": "prometheus"
+           },
+      39 -      "fieldConfig": {                                         
+      40 -        "defaults": { "unit": "reqps" },                       
+      41 -        "overrides": []                                        
+      42 -      },                                                       
+      43 -      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },         
+      43 +      "fieldConfig": { "defaults": { "unit": "reqps" }, "overri
+         +des": [] },                                                    
+      44 +      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },         
+      45        "id": 2,
+      46        "targets": [
+      47          {
+     ...
+      49            "legendFormat": "{{path}} {{status}}"
+      50          }
+      51        ],
+      51 -      "title": "HTTP Request Rate by Endpoint & Status",       
+      52 +      "title": "Request Rate by Endpoint & Status",            
+      53        "type": "timeseries"
+      54      },
+      55      {
+      55 -      "datasource": { "type": "prometheus", "uid": "prometheus"
+         - },                                                            
+      56 -      "fieldConfig": { "defaults": { "unit": "percentunit", "mi
+         -n": 0, "max": 1 }, "overrides": [] },                          
+      57 -      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },          
+      58 -      "id": 3,                                                 
+      59 -      "targets": [                                             
+      60 -        {                                                      
+      61 -          "expr": "rate(timeline_cache_hits_total[5m]) / clamp_
+         -min(rate(timeline_cache_hits_total[5m]) + rate(timeline_cache_m
+         -isses_total[5m]), 1e-9)",                                      
+      62 -          "legendFormat": "Cache Hit Rate"                     
+      63 -        }                                                      
+      64 -      ],                                                       
+      65 -      "title": "Timeline Cache Hit Rate",                      
+      66 -      "type": "timeseries"                                     
+      56 +      "collapsed": false,                                      
+      57 +      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },          
+      58 +      "id": 101,                                               
+      59 +      "title": "RabbitMQ",                                     
+      60 +      "type": "row"                                            
+      61      },
+      62      {
+      63        "datasource": { "type": "prometheus", "uid": "prometheus"
+           },
+      64        "fieldConfig": { "defaults": { "unit": "short" }, "overri
+          des": [] },
+      71 -      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },         
+      65 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },         
+      66        "id": 4,
+      67        "targets": [
+      68          {
+     ...
+      70            "legendFormat": "{{queue}}"
+      71          }
+      72        ],
+      79 -      "title": "RabbitMQ Queue Depth",                         
+      73 +      "title": "Queue Depth",                                  
+      74        "type": "timeseries"
+      75      },
+      76      {
+      77        "datasource": { "type": "prometheus", "uid": "prometheus"
+           },
+      78        "fieldConfig": { "defaults": { "unit": "percentunit", "mi
+          n": 0, "max": 1 }, "overrides": [] },
+      85 -      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },         
+      79 +      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },        
+      80        "id": 5,
+      81        "targets": [
+      82          {
+     ...
+       84            "legendFormat": "{{queue}}"
+       85          }
+       86        ],
+       93 -      "title": "RabbitMQ Consumer Success Rate",              
+       87 +      "title": "Consumer Success Rate",                       
+       88        "type": "timeseries"
+       89      },
+       90      {
+       91 +      "collapsed": false,                                     
+       92 +      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },        
+       93 +      "id": 102,                                              
+       94 +      "title": "Cache & Fanout",                              
+       95 +      "type": "row"                                           
+       96 +    },                                                        
+       97 +    {                                                         
+       98        "datasource": { "type": "prometheus", "uid": "prometheus
+           " },
+       99 +      "fieldConfig": { "defaults": { "unit": "percentunit", "m
+          +in": 0, "max": 1 }, "overrides": [] },                        
+      100 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },        
+      101 +      "id": 3,                                                
+      102 +      "targets": [                                            
+      103 +        {                                                     
+      104 +          "expr": "rate(timeline_cache_hits_total[5m]) / clamp
+          +_min(rate(timeline_cache_hits_total[5m]) + rate(timeline_cache
+          +_misses_total[5m]), 1e-9)",                                   
+      105 +          "legendFormat": "Cache Hit Rate"                    
+      106 +        }                                                     
+      107 +      ],                                                      
+      108 +      "title": "Timeline Cache Hit Rate",                     
+      109 +      "type": "timeseries"                                    
+      110 +    },                                                        
+      111 +    {                                                         
+      112 +      "datasource": { "type": "prometheus", "uid": "prometheus
+          +" },                                                          
+      113        "fieldConfig": { "defaults": { "unit": "s" }, "overrides
+           ": [] },
+       99 -      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },       
+      114 +      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },       
+      115        "id": 6,
+      116        "options": { "legend": { "calcs": ["p50", "p95", "p99"],
+            "displayMode": "table", "placement": "bottom" } },
+      117        "targets": [
+     ...
+      133      },
+      134      {
+      135        "datasource": { "type": "prometheus", "uid": "prometheus
+           " },
+      136 +      "fieldConfig": { "defaults": { "unit": "short" }, "overr
+          +ides": [] },                                                  
+      137 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },        
+      138 +      "id": 10,                                               
+      139 +      "targets": [                                            
+      140 +        {                                                     
+      141 +          "expr": "sum(increase(fanout_dead_letter_total[5m]))
+          +",                                                            
+      142 +          "legendFormat": "Dead Letters (5m)"                 
+      143 +        }                                                     
+      144 +      ],                                                      
+      145 +      "title": "Fanout Dead Letters",                         
+      146 +      "type": "timeseries"                                    
+      147 +    },                                                        
+      148 +    {                                                         
+      149 +      "collapsed": false,                                     
+      150 +      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },        
+      151 +      "id": 103,                                              
+      152 +      "title": "Base de Datos",                               
+      153 +      "type": "row"                                           
+      154 +    },                                                        
+      155 +    {                                                         
+      156 +      "datasource": { "type": "prometheus", "uid": "prometheus
+          +" },                                                          
+      157        "fieldConfig": { "defaults": { "unit": "s" }, "overrides
+           ": [] },
+      122 -      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },        
+      158 +      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },        
+      159        "id": 7,
+      160        "options": { "legend": { "calcs": ["p50", "p95", "p99"],
+            "displayMode": "table", "placement": "bottom" } },
+      161        "targets": [
+     ...
+      172            "legendFormat": "p99 {{operation}}"
+      173          }
+      174        ],
+      139 -      "title": "DB Query Duration by Operation",              
+      175 +      "title": "Query Duration by Operation",                 
+      176        "type": "timeseries"
+      177      },
+      178      {
+      179        "datasource": { "type": "prometheus", "uid": "prometheus
+           " },
+      180        "fieldConfig": { "defaults": { "unit": "short" }, "overr
+           ides": [] },
+      145 -      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 24 },        
+      181 +      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 36 },        
+      182        "id": 8,
+      183        "options": { "reduceOptions": { "calcs": ["lastNotNull"]
+            }, "orientation": "auto", "textMode": "auto", "colorMode": "b
+           ackground", "graphMode": "area" },
+      184        "targets": [
+     ...
+      187            "legendFormat": "Active Connections"
+      188          }
+      189        ],
+      154 -      "title": "DB Active Connections",                       
+      190 +      "title": "Active Connections",                          
+      191        "type": "stat"
+      192      },
+      193      {
+      194        "datasource": { "type": "prometheus", "uid": "prometheus
+           " },
+      195        "fieldConfig": { "defaults": { "unit": "short" }, "overr
+           ides": [] },
+      160 -      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 24 },        
+      196 +      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 36 },        
+      197        "id": 9,
+      198        "targets": [
+      199          {
+     ...
+      201            "legendFormat": "{{type}}"
+      202          }
+      203        ],
+      168 -      "title": "DB Error Rate by Type",                       
+      204 +      "title": "Error Rate by Type",                          
+      205        "type": "timeseries"
+      170 -    },                                                        
+      171 -    {                                                         
+      172 -      "datasource": { "type": "prometheus", "uid": "prometheus
+          -" },                                                          
+      173 -      "fieldConfig": { "defaults": { "unit": "short" }, "overr
+          -ides": [] },                                                  
+      174 -      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },        
+      175 -      "id": 10,                                               
+      176 -      "targets": [                                            
+      177 -        {                                                     
+      178 -          "expr": "sum(increase(fanout_dead_letter_total[5m]))
+          -",                                                            
+      179 -          "legendFormat": "Dead Letters (5m)"                 
+      180 -        }                                                     
+      181 -      ],                                                      
+      182 -      "title": "Fanout Dead Letters",                         
+      183 -      "type": "timeseries"                                    
+      206      }
+      207    ],
+      208    "refresh": "30s",
+     ...
+      214    "timezone": "browser",
+      215    "title": "Uala — System Metrics",
+      216    "uid": "uala-metrics",
+      195 -  "version": 2                                                
+      217 +  "version": 3                                                
+      218  }
+
+⏺ Grafana recarga dashboards en caliente desde el volumen, así que no hace falta
+   recrear el container — alcanza con refrescar el browser.
+
+  La estructura quedó:
+
+  ── HTTP ──────────────────────────────────
+    Latency p50/p95/p99    │  Request Rate
+
+  ── RabbitMQ ──────────────────────────────
+    Queue Depth            │  Consumer Success Rate
+
+  ── Cache & Fanout ────────────────────────
+    Cache Hit Rate         │  Fanout Duration
+    Dead Letters
+
+  ── Base de Datos ─────────────────────────
+    Query Duration         │  Active Connections  │  Error Rate
+
+✻ Cogitated for 37s
+
+❯ quiero cambiar el @load_test.py al momento de medir lecturas quiero separar   
+  las metricas de usuarios activos de los que se activan y desactivan           
+  ⎿  Read load_test.py (522 lines)
+
+⏺ El cambio es claro: en lugar de registrar todas las lecturas como "timeline",
+  usar "timeline_always_on" / "timeline_cycler" / "timeline_one_shot" según el
+  perfil del VU. Además hay que hacer el snapshot y el summary dinámicos para
+  que no tengan la lista hardcodeada de endpoints.
+
+⏺ Update(load_test.py)
+  ⎿  Added 4 lines, removed 1 line
+      227      try:
+      228          if op == "timeline":
+      229              latency_ms, status, _ = do_request(conn, "GET", "/
+           timeline", user_id=user_id)
+      230 +            endpoint_label = f"timeline_{profile}"            
+      231          elif op == "tweets":
+      232              content = f"tweet {random.randint(0, 999999)}"
+      233              latency_ms, status, _ = do_request(conn, "POST", "
+           /tweets", {"content": content}, user_id=user_id)
+      234 +            endpoint_label = "tweets"                         
+      235          else:
+      236              target = random.choice(state.user_ids + state.cele
+           brity_ids)
+      237              latency_ms, status, _ = do_request(conn, "POST", "
+           /follow", {"followee_id": target}, user_id=user_id)
+      238 +            endpoint_label = "follow"                         
+      239          collector.add(RequestResult(
+      240              timestamp=time.time(),
+      238 -            endpoint=op,                                      
+      241 +            endpoint=endpoint_label,                          
+      242              latency_ms=latency_ms,
+      243              status_code=status,
+      244              vu_profile=profile,
+
+⏺ Ahora hago el by_endpoint dinámico en lugar de la lista hardcodeada:
+
+⏺ Update(load_test.py)
+  ⎿  Added 1 line, removed 1 line
+      142          latencies = [r.latency_ms for r in results]
+      143          errors = sum(1 for r in results if r.status_code >= 40
+           0)
+      144          by_endpoint: dict = {}
+      145 -        for ep in ("timeline", "tweets", "follow"):           
+      145 +        for ep in sorted(set(r.endpoint for r in results)):   
+      146              ep_lats = [r.latency_ms for r in results if r.endp
+           oint == ep]
+      147              if ep_lats:
+      148                  by_endpoint[ep] = {"p95": _percentile(ep_lats,
+            95)}
+⏺ Y lo mismo en write_results:
+
+⏺ Update(load_test.py)
+  ⎿  Added 1 line, removed 1 line
+      451      with open(summary_path, "w") as f:
+      452          f.write(f"Total requests: {total}\n")
+      453          f.write(f"Error rate:     {errors / total * 100:.1f}%\
+           n\n")
+      454 -        for ep in ("timeline", "tweets", "follow"):           
+      454 +        for ep in sorted(set(r.endpoint for r in results)):   
+      455              ep_results = [r for r in results if r.endpoint == 
+           ep]
+      456              if not ep_results:
+      457                  continue
+
+⏺ Los cambios son mínimos y localizados. El output del reporter ahora se ve así:
+
+  [t=30s] VUs: 150 | RPS: 420 | p50: 8ms | p95: 45ms | p99: 120ms | errors: 0.2%
+   | total: 12600
+    follow: p95=12ms  timeline_always_on: p95=38ms  timeline_cycler: p95=52ms
+  tweets: p95=18ms
+
+  Y el CSV/summary separa cada variante en su propia sección, lo que te permite
+  comparar directamente la latencia de lecturas en usuarios siempre activos vs
+  los que entran y salen del ciclo activo/inactivo.
+
+✻ Churned for 48s
+
+※ recap: Iterando el stack de observabilidad del proyecto. Mejoramos el dashboard de Grafana con secciones y paneles completos, habilitamos acceso anónimo, y separamos métricas de timeline por perfil de VU en el load test. No hay nada pendiente. (disable recaps in /config)
+
+❯ durante la pueba estoy teniendo este error 2026/05/02 16:32:56 usecase:       
+  publish user activity for 1a42a30d-74d4-4b16-a18d-8f93f719607a: Exception     
+  (504) Reason: "channel/connection is not open"                                
+
+⏺ Voy a ver el código de RabbitMQ para entender el problema.
+
+⏺ Bash(find /Users/gonza/Katas/uala/internal -name "*.go" | xargs grep -l
+      "channel\|connection\|rabbit\|amqp\|publish" -i | sort)
+  ⎿  /Users/gonza/Katas/uala/internal/domain/events.go
+     /Users/gonza/Katas/uala/internal/handler/mocks_test.go
+     /Users/gonza/Katas/uala/internal/handler/setup_test.go
+     … +13 lines (ctrl+o to expand)
+
+  Read 3 files (ctrl+o to expand)
+
+⏺ Veo el problema. Bajo carga alta, RabbitMQ cierra canales por backpressure. El
+   Publisher ya maneja eso (nil-ea el canal y abre uno nuevo), pero hay una
+  ventana de reconexión: cuando la conexión cae, openCh() intenta Channel()
+  sobre la conexión vieja antes de que reconnectLoop termine de reconectar, y
+  falla. La solución es reintentar con backoff en el publisher.
+
+⏺ Update(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Added 1 line
+       4    "context"
+       5    "encoding/json"
+       6    "sync"
+       7 +  "time"                                                       
+       8  
+       9    amqp "github.com/rabbitmq/amqp091-go"
+      10    "uala/internal/domain"
+
+⏺ Update(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Added 14 lines
+      54      return err
+      55    }
+      56  
+      57 +  const maxAttempts = 3                                        
+      58 +  var lastErr error                                            
+      59 +  for attempt := range maxAttempts {                           
+      60 +    if attempt > 0 {                                           
+      61 +      time.Sleep(time.Duration(attempt) * 300 * time.Millisecon
+         +d)                                                             
+      62 +    }                                                          
+      63 +    if lastErr = p.tryPublish(exchange, key, body); lastErr == 
+         +nil {                                                          
+      64 +      return nil                                               
+      65 +    }                                                          
+      66 +  }                                                            
+      67 +  return lastErr                                               
+      68 +}                                                              
+      69 +                                                               
+      70 +func (p *Publisher) tryPublish(exchange, key string, body []byt
+         +e) error {                                                     
+      71    p.mu.Lock()
+      72    defer p.mu.Unlock()
+      73  
+
+⏺ Bash(go build ./internal/messaging/rabbitmq/...)
+  ⎿  (No output)
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... 2>&1)
+  ⎿  ok         uala/internal/messaging/rabbitmq        0.958s
+
+⏺ Tests pasan. El fix:
+
+  Raíz del problema: bajo carga alta, RabbitMQ cierra el canal por backpressure
+  (error 504). El publisher lo detecta, nil-ea el canal, y en el siguiente
+  publish intenta abrir uno nuevo con conn.Channel(). Si la conexión también
+  cayó, ese Channel() falla porque reconnectLoop todavía no terminó de
+  reconectar.
+
+  Fix: extraje la lógica de un intento en tryPublish y envolví con hasta 3
+  reintentos con backoff exponencial suave (0ms, 300ms, 600ms). Eso le da tiempo
+   al reconnectLoop para restablecer la conexión antes de rendirse.
+
+✻ Brewed for 1m 0s
+
+※ recap: Working on the Uala load test and monitoring stack. Fixed a RabbitMQ publisher retry bug and updated the Grafana dashboard with sections and new panels. No pending actions. (disable recaps in /config)
+
+❯ ➜  uala git:(master) ✗ python3 load_test.py --target http://192.168.1.37:8080 
+  [seed] 2 celebrities creados: ['a4ba46c8-95bc-4b25-9cba-388f1472e893',        
+  '46d74a04-8a92-4af3-a093-8c126ce1f2b8']                                       
+  [seed] Creando 1000 usuarios...                                               
+  [seed] 1000 usuarios creados.                                                 
+  [seed] Creando follows (200 por usuario)...                                   
+  [seed] Publicando 100 tweets por usuario...                                   
+  Traceback (most recent call last):                                            
+    File "/Users/gonza/Katas/uala/load_test.py", line 524, in <module>          
+      main()                                                                    
+      ~~~~^^                                                                    
+    File "/Users/gonza/Katas/uala/load_test.py", line 499, in main              
+      state = run_seed(config)                                                  
+    File "/Users/gonza/Katas/uala/load_test.py", line 358, in run_seed          
+      list(ex.map(_create_tweets, state.user_ids))                              
+      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                              
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/con 
+  current/futures/_base.py", line 619, in result_iterator                       
+      yield _result_or_cancel(fs.pop())                                         
+            ~~~~~~~~~~~~~~~~~^^^^^^^^^^                                         
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/con 
+  current/futures/_base.py", line 317, in _result_or_cancel                     
+      return fut.result(timeout)                                                
+             ~~~~~~~~~~^^^^^^^^^                                                
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/con 
+  current/futures/_base.py", line 456, in result                                
+      return self.__get_result()                                                
+             ~~~~~~~~~~~~~~~~~^^                                                
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/con 
+  current/futures/_base.py", line 401, in __get_result                          
+      raise self._exception                                                     
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/con 
+  current/futures/thread.py", line 59, in run                                   
+      result = self.fn(*self.args, **self.kwargs)                               
+    File "/Users/gonza/Katas/uala/load_test.py", line 348, in _create_tweets    
+      do_request(                                                               
+      ~~~~~~~~~~^                                                               
+          conn, "POST", "/tweets",                                              
+          ^^^^^^^^^^^^^^^^^^^^^^^^                                              
+          {"content": f"seed tweet {i} by {user_id[:8]}"},                      
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                      
+          user_id=user_id,                                                      
+          ^^^^^^^^^^^^^^^^                                                      
+      )                                                                         
+      ^                                                                         
+    File "/Users/gonza/Katas/uala/load_test.py", line 99, in do_request         
+      resp = conn.getresponse()                                                 
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/htt 
+  p/client.py", line 1430, in getresponse                                       
+      response.begin()                                                          
+      ~~~~~~~~~~~~~~^^                                                          
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/htt 
+  p/client.py", line 331, in begin                                              
+      version, status, reason = self._read_status()                             
+                                ~~~~~~~~~~~~~~~~~^^                             
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/htt 
+  p/client.py", line 292, in _read_status                                       
+      line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")                  
+                 ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^                                 
+    File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/soc 
+  ket.py", line 719, in readinto                                                
+      return self._sock.recv_into(b)                                            
+             ~~~~~~~~~~~~~~~~~~~~^^^                                            
+  TimeoutError: timed out                                                       
+  ➜  uala git:(master) ✗                                                        
+
+⏺ El problema está en _create_tweets: si la conexión se rompe (el servidor se
+  satura por el fanout de los tweets del seed), el error no se captura y explota
+   todo. A diferencia de los VU workers, _create_tweets no tiene reconnect. La
+  corrección es la misma que ya existe en _do_one_request.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(load_test.py)
+  ⎿  Added 16 lines, removed 5 lines
+      345          conn = _new_conn(config)
+      346          try:
+      347              for i in range(config.tweets_per_user):
+      348 -                do_request(                                   
+      349 -                    conn, "POST", "/tweets",                  
+      350 -                    {"content": f"seed tweet {i} by {user_id[:
+          -8]}"},                                                        
+      351 -                    user_id=user_id,                          
+      352 -                )                                             
+      348 +                for attempt in range(3):                      
+      349 +                    try:                                      
+      350 +                        do_request(                           
+      351 +                            conn, "POST", "/tweets",          
+      352 +                            {"content": f"seed tweet {i} by {u
+          +ser_id[:8]}"},                                                
+      353 +                            user_id=user_id,                  
+      354 +                        )                                     
+      355 +                        break                                 
+      356 +                    except Exception:                         
+      357 +                        try:                                  
+      358 +                            conn.close()                      
+      359 +                        except Exception:                     
+      360 +                            pass                              
+      361 +                        conn = _new_conn(config)              
+      362 +                        if attempt == 2:                      
+      363 +                            raise                             
+      364          finally:
+      365              conn.close()
+      366  
+
+⏺ Lo mismo aplica a _create_follows que tiene el mismo problema potencial:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(load_test.py)
+  ⎿  Added 14 lines, removed 5 lines
+      325      def _create_follows(user_id: str) -> None:
+      326          conn = _new_conn(config)
+      327          try:
+      328 -            for celeb_id in state.celebrity_ids:              
+      329 -                do_request(conn, "POST", "/follow", {"followee
+          -_id": celeb_id}, user_id=user_id)                             
+      330 -            peers = random.sample(                            
+      328 +            peers = [celeb_id for celeb_id in state.celebrity_
+          +ids] + random.sample(                                         
+      329                  [uid for uid in state.user_ids if uid != user_
+           id],
+      330                  min(config.follows_per_user, len(state.user_id
+           s) - 1),
+      331              )
+      334 -            for peer_id in peers:                             
+      335 -                do_request(conn, "POST", "/follow", {"followee
+          -_id": peer_id}, user_id=user_id)                              
+      332 +            for followee_id in peers:                         
+      333 +                for attempt in range(3):                      
+      334 +                    try:                                      
+      335 +                        do_request(conn, "POST", "/follow", {"
+          +followee_id": followee_id}, user_id=user_id)                  
+      336 +                        break                                 
+      337 +                    except Exception:                         
+      338 +                        try:                                  
+      339 +                            conn.close()                      
+      340 +                        except Exception:                     
+      341 +                            pass                              
+      342 +                        conn = _new_conn(config)              
+      343 +                        if attempt == 2:                      
+      344 +                            raise                             
+      345          finally:
+      346              conn.close()
+      347  
+
+⏺ Ambas funciones ahora tienen el mismo patrón: ante cualquier excepción
+  (timeout, connection reset), cierran la conexión rota, abren una nueva, y
+  reintentan hasta 3 veces. Si los 3 intentos fallan, propagan el error.
+
+  El motivo del crash original: 100 tweets × 1000 usuarios con 50 workers
+  concurrentes genera un pico de fanout en RabbitMQ que satura el servidor, las
+  conexiones HTTP empiezan a timeoutear, y sin manejo de errores el seed
+  explotaba en medio de la fase más pesada.
+
+✻ Baked for 34s
+
+※ recap: Working on a Uala microblogging load test and Grafana dashboard. Fixed RabbitMQ publisher retry logic and seed phase connection error handling. Ready to run the load test again to verify.
+
+❯ sigo teniendo errores 2026/05/02 16:51:08 usecase: publish user activity for  
+  ee9c740c-33cc-4b1a-9edc-5693687f1ce5: Exception (504) Reason:                 
+  "channel/connection is not open"                                              
+⏺ El error viene del servidor Go, no del cliente Python. Voy a ver el usecase
+  que llama a PublishUserActivity.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ El error ya está siendo swallowed (solo se loguea, el timeline igual
+  responde), pero el problema real es otro: el publisher mantiene un canal 
+  compartido con mutex, lo que significa que bajo carga todos los goroutines
+  esperan en fila para publicar, y cuando el canal muere los reintentos bloquean
+   el request de timeline hasta 600ms.
+
+  La raíz: RabbitMQ cierra el canal cuando hay demasiados mensajes en vuelo
+  sobre ese único canal. La solución correcta es un canal por publish (los
+  channels de AMQP son livianos y baratos de abrir).
+
+⏺ Update(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Added 2 lines, removed 12 lines
+      10    "uala/internal/domain"
+      11  )
+      12  
+      13 -// amqpChannel is the subset of *amqp.Channel the publisher use
+         -s.                                                             
+      14 -type amqpChannel interface {                                   
+      15 -  Publish(exchange, key string, mandatory, immediate bool, msg 
+         -amqp.Publishing) error                                         
+      16 -  Close() error                                                
+      17 -}                                                              
+      18 -                                                               
+      13  type Publisher struct {
+      20 -  openCh func() (amqpChannel, error)                           
+      21 -  mu     sync.Mutex                                            
+      22 -  ch     amqpChannel                                           
+      14 +  conn channeler                                               
+      15  }
+      16  
+      17  func NewPublisher(conn channeler) *Publisher {
+      26 -  return &Publisher{                                           
+      27 -    openCh: func() (amqpChannel, error) { return conn.Channel()
+         - },                                                            
+      28 -  }                                                            
+      18 +  return &Publisher{conn: conn}                                
+      19  }
+      20  
+      21  func (p *Publisher) PublishTweetCreated(ctx context.Context, ev
+          t domain.TweetCreatedEvent) error {
+
+⏺ Update(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Removed 1 line
+      3  import (
+      4    "context"
+      5    "encoding/json"
+      6 -  "sync"                                                        
+      6    "time"
+      7  
+      8    amqp "github.com/rabbitmq/amqp091-go"
+
+⏺ Update(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Added 12 lines, removed 25 lines
+      49      if attempt > 0 {
+      50        time.Sleep(time.Duration(attempt) * 300 * time.Millisecon
+          d)
+      51      }
+      52 -    if lastErr = p.tryPublish(exchange, key, body); lastErr == 
+         -nil {                                                          
+      52 +    ch, err := p.conn.Channel()                                
+      53 +    if err != nil {                                            
+      54 +      lastErr = err                                            
+      55 +      continue                                                 
+      56 +    }                                                          
+      57 +    lastErr = ch.Publish(exchange, key, false, false, amqp.Publ
+         +ishing{                                                        
+      58 +      ContentType:  "application/json",                        
+      59 +      DeliveryMode: amqp.Persistent,                           
+      60 +      Body:         body,                                      
+      61 +    })                                                         
+      62 +    ch.Close()                                                 
+      63 +    if lastErr == nil {                                        
+      64        return nil
+      65      }
+      66    }
+      67    return lastErr
+      68  }
+      69  
+      59 -func (p *Publisher) tryPublish(exchange, key string, body []byt
+         -e) error {                                                     
+      60 -  p.mu.Lock()                                                  
+      61 -  defer p.mu.Unlock()                                          
+      62 -                                                               
+      63 -  if p.ch == nil {                                             
+      64 -    ch, err := p.openCh()                                      
+      65 -    if err != nil {                                            
+      66 -      return err                                               
+      67 -    }                                                          
+      68 -    p.ch = ch                                                  
+      69 -  }                                                            
+      70 -                                                               
+      71 -  if err := p.ch.Publish(exchange, key, false, false, amqp.Publ
+         -ishing{                                                        
+      72 -    ContentType:  "application/json",                          
+      73 -    DeliveryMode: amqp.Persistent,                             
+      74 -    Body:         body,                                        
+      75 -  }); err != nil {                                             
+      76 -    p.ch.Close()                                               
+      77 -    p.ch = nil                                                 
+      78 -    return err                                                 
+      79 -  }                                                            
+      80 -  return nil                                                   
+      81 -}                                                              
+      82 -                                                               
+      70  // DeadLetterPublisher adapta Publisher para implementar domain
+          .FanoutRetryPublisher
+      71  // publicando a fanout.dead en lugar de fanout.retry.
+      72  type DeadLetterPublisher struct {
+
+⏺ Bash(go build ./internal/messaging/rabbitmq/... && go test
+      ./internal/messaging/rabbitmq/... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/publisher_test.go:32:3: unknown field openCh in
+      struct literal of type Publisher
+     internal/messaging/rabbitmq/publisher_test.go:32:19: undefined: amqpChannel
+     internal/messaging/rabbitmq/publisher_test.go:56:3: unknown field openCh in
+      struct literal of type Publisher
+     internal/messaging/rabbitmq/publisher_test.go:56:19: undefined: amqpChannel
+     FAIL       uala/internal/messaging/rabbitmq [build failed]
+     FAIL
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Los tests cubren el comportamiento anterior (reusar canal). Los reescribo para
+   la nueva semántica: un canal por publish.
+
+⏺ Write(internal/messaging/rabbitmq/publisher_test.go)
+  ⎿  Added 83 lines, removed 39 lines
+        8    amqp "github.com/rabbitmq/amqp091-go"
+        9  )
+       10  
+       11 -type fakeAmqpChannel struct {                                 
+       11 +type fakeChannel struct {                                     
+       12    publishErr error
+       13    publishes  atomic.Int32
+       14    closes     atomic.Int32
+       15  }
+       16  
+       17 -func (f *fakeAmqpChannel) Publish(_, _ string, _, _ bool, _ am
+          -qp.Publishing) error {                                        
+       17 +func (f *fakeChannel) Publish(_, _ string, _, _ bool, _ amqp.P
+          +ublishing) error {                                            
+       18    f.publishes.Add(1)
+       19    return f.publishErr
+       20  }
+       21  
+       22 -func (f *fakeAmqpChannel) Close() error {                     
+       22 +func (f *fakeChannel) Close() error {                         
+       23    f.closes.Add(1)
+       24    return nil
+       25  }
+       26  
+       27 -func TestPublisher_ReusesChannelAcrossPublishes(t *testing.T) 
+          -{                                                             
+       28 -  var opens atomic.Int32                                      
+       29 -  fc := &fakeAmqpChannel{}                                    
+       27 +type fakeConn struct {                                        
+       28 +  channelErr error                                            
+       29 +  opens      atomic.Int32                                     
+       30 +  chFactory  func() *fakeChannel                              
+       31 +}                                                             
+       32  
+       31 -  p := &Publisher{                                            
+       32 -    openCh: func() (amqpChannel, error) {                     
+       33 -      opens.Add(1)                                            
+       34 -      return fc, nil                                          
+       35 -    },                                                        
+       36 -  }                                                           
+       33 +func (f *fakeConn) Channel() (*amqp.Channel, error) {         
+       34 +  // not used directly — tests use fakeChanneler below        
+       35 +  panic("use fakeChanneler")                                  
+       36 +}                                                             
+       37  
+       38 -  for i := range 5 {                                          
+       39 -    if err := p.publishToExchange("", "q", "payload"); err != 
+          -nil {                                                         
+       40 -      t.Fatalf("publish %d: %v", i, err)                      
+       41 -    }                                                         
+       42 -  }                                                           
+       38 +type fakeChanneler struct {                                   
+       39 +  channelErr error                                            
+       40 +  opens      atomic.Int32                                     
+       41 +  chFactory  func() *fakeChannel                              
+       42 +}                                                             
+       43  
+       44 -  if opens.Load() != 1 {                                      
+       45 -    t.Errorf("want channel opened once for 5 publishes, got %d
+          - opens", opens.Load())                                        
+       46 -  }                                                           
+       47 -  if fc.publishes.Load() != 5 {                               
+       48 -    t.Errorf("want 5 Publish calls, got %d", fc.publishes.Load
+          -())                                                           
+       49 -  }                                                           
+       44 +func (f *fakeChanneler) Channel() (*amqp.Channel, error) {    
+       45 +  panic("not used")                                           
+       46  }
+       47  
+       52 -func TestPublisher_ReopensChannelAfterPublishError(t *testing.
+          -T) {                                                          
+       53 -  var opens atomic.Int32                                      
+       48 +// channelerFunc lets tests inject a custom Channel() impl.   
+       49 +type channelerFunc func() (*amqp.Channel, error)              
+       50  
+       55 -  p := &Publisher{                                            
+       56 -    openCh: func() (amqpChannel, error) {                     
+       57 -      fc := &fakeAmqpChannel{}                                
+       58 -      if opens.Add(1) == 1 {                                  
+       59 -        fc.publishErr = errors.New("channel closed")          
+       60 -      }                                                       
+       61 -      return fc, nil                                          
+       62 -    },                                                        
+       63 -  }                                                           
+       51 +func (fn channelerFunc) Channel() (*amqp.Channel, error) { ret
+          +urn fn() }                                                    
+       52  
+       65 -  _ = p.publishToExchange("", "q", "payload") // fails, channe
+          -l invalidated                                                 
+       53 +// publisherWithFakeChannel builds a Publisher whose Channel()
+          + returns a fake.                                              
+       54 +// Since *amqp.Channel is a concrete type, we wrap via the amq
+          +pChannel interface                                            
+       55 +// by patching publishToExchange directly in tests via a testa
+          +ble wrapper.                                                  
+       56  
+       67 -  if err := p.publishToExchange("", "q", "payload"); err != ni
+          -l {                                                           
+       68 -    t.Fatalf("second publish after error: %v", err)           
+       57 +// --- tests use a small adapter that replaces conn.Channel wi
+          +th a fake ---                                                 
+       58 +                                                              
+       59 +type fakeChannelConn struct {                                 
+       60 +  opens   atomic.Int32                                        
+       61 +  makeErr error                                               
+       62 +  ch      func() channelPublisher                             
+       63 +}                                                             
+       64 +                                                              
+       65 +type channelPublisher interface {                             
+       66 +  Publish(exchange, key string, mandatory, immediate bool, msg
+          + amqp.Publishing) error                                       
+       67 +  Close() error                                               
+       68 +}                                                             
+       69 +                                                              
+       70 +// We can't inject fakeChannel via channeler because channeler
+          + returns *amqp.Channel.                                       
+       71 +// So we test publishToExchange indirectly via a thin wrapper 
+          +that exposes the same logic.                                  
+       72 +                                                              
+       73 +func publishViaConn(conn channeler, exchange, key string, payl
+          +oad any) error {                                              
+       74 +  p := NewPublisher(conn)                                     
+       75 +  return p.publishToExchange(exchange, key, payload)          
+       76 +}                                                             
+       77 +                                                              
+       78 +func TestPublisher_OpensNewChannelPerPublish(t *testing.T) {  
+       79 +  // We can only test channel-open count via ResilientConn.Cha
+          +nnel() real behavior,                                         
+       80 +  // so here we verify that a publish error on open triggers r
+          +etry.                                                         
+       81 +  var attempts atomic.Int32                                   
+       82 +  // inject a conn that fails Channel() twice then succeeds vi
+          +a real amqp — we                                              
+       83 +  // simulate by counting calls and returning error.          
+       84 +  p := &Publisher{conn: connFunc(func() (*amqp.Channel, error)
+          + {                                                            
+       85 +    attempts.Add(1)                                           
+       86 +    return nil, errors.New("channel/connection is not open")  
+       87 +  })}                                                         
+       88 +                                                              
+       89 +  err := p.publishToExchange("", "q", "payload")              
+       90 +  if err == nil {                                             
+       91 +    t.Fatal("expected error when all channel opens fail")     
+       92    }
+       93 +  if attempts.Load() != 3 {                                   
+       94 +    t.Errorf("want 3 attempts, got %d", attempts.Load())      
+       95 +  }                                                           
+       96 +}                                                             
+       97  
+       71 -  if opens.Load() != 2 {                                      
+       72 -    t.Errorf("want 2 channel opens after error, got %d", opens
+          -.Load())                                                      
+       98 +func TestPublisher_SucceedsOnRetry(t *testing.T) {            
+       99 +  var attempts atomic.Int32                                   
+      100 +  p := &Publisher{conn: connFunc(func() (*amqp.Channel, error)
+          + {                                                            
+      101 +    n := attempts.Add(1)                                      
+      102 +    if n < 3 {                                                
+      103 +      return nil, errors.New("channel/connection is not open")
+      104 +    }                                                         
+      105 +    return nil, errors.New("still no real broker in unit test"
+          +)                                                             
+      106 +  })}                                                         
+      107 +                                                              
+      108 +  // All 3 attempts fail (no real broker), but we verify attem
+          +pt count = 3.                                                 
+      109 +  _ = p.publishToExchange("", "q", "payload")                 
+      110 +  if attempts.Load() != 3 {                                   
+      111 +    t.Errorf("want 3 Channel() calls, got %d", attempts.Load()
+          +)                                                             
+      112    }
+      113  }
+      114 +                                                              
+      115 +// connFunc adapts a func to the channeler interface.         
+      116 +type connFunc func() (*amqp.Channel, error)                   
+      117 +                                                              
+      118 +func (f connFunc) Channel() (*amqp.Channel, error) { return f(
+          +) }                                                           
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/resilient_conn_test.go:14:6: fakeConn 
+     redeclared in this block
+        internal/messaging/rabbitmq/publisher_test.go:27:6: other declaration of
+     fakeConn
+     internal/messaging/rabbitmq/resilient_conn_test.go:18:20: method 
+     fakeConn.Channel already declared at 
+     internal/messaging/rabbitmq/publisher_test.go:33:20
+     internal/messaging/rabbitmq/resilient_conn_test.go:22:22: f.notifyCh 
+     undefined (type *fakeConn has no field or method notifyCh)
+     internal/messaging/rabbitmq/resilient_conn_test.go:38:21: unknown field 
+     notifyCh in struct literal of type fakeConn
+     internal/messaging/rabbitmq/resilient_conn_test.go:40:20: unknown field 
+     notifyCh in struct literal of type fakeConn
+     internal/messaging/rabbitmq/resilient_conn_test.go:68:20: unknown field 
+     notifyCh in struct literal of type fakeConn
+     internal/messaging/rabbitmq/resilient_conn_test.go:92:20: unknown field 
+     notifyCh in struct literal of type fakeConn
+     … +2 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ El fakeConn que agregué en publisher_test.go choca con el de
+  resilient_conn_test.go. Limpio el test del publisher para que solo tenga lo
+  que necesita.
+
+⏺ Write(internal/messaging/rabbitmq/publisher_test.go)
+  ⎿  Added 4 lines, removed 92 lines
+       8    amqp "github.com/rabbitmq/amqp091-go"
+       9  )
+      10  
+      11 -type fakeChannel struct {                                      
+      12 -  publishErr error                                             
+      13 -  publishes  atomic.Int32                                      
+      14 -  closes     atomic.Int32                                      
+      15 -}                                                              
+      11 +// connFunc adapts a func to the channeler interface.          
+      12 +type connFunc func() (*amqp.Channel, error)                    
+      13  
+      17 -func (f *fakeChannel) Publish(_, _ string, _, _ bool, _ amqp.Pu
+         -blishing) error {                                              
+      18 -  f.publishes.Add(1)                                           
+      19 -  return f.publishErr                                          
+      20 -}                                                              
+      14 +func (f connFunc) Channel() (*amqp.Channel, error) { return f()
+         + }                                                             
+      15  
+      22 -func (f *fakeChannel) Close() error {                          
+      23 -  f.closes.Add(1)                                              
+      24 -  return nil                                                   
+      25 -}                                                              
+      26 -                                                               
+      27 -type fakeConn struct {                                         
+      28 -  channelErr error                                             
+      29 -  opens      atomic.Int32                                      
+      30 -  chFactory  func() *fakeChannel                               
+      31 -}                                                              
+      32 -                                                               
+      33 -func (f *fakeConn) Channel() (*amqp.Channel, error) {          
+      34 -  // not used directly — tests use fakeChanneler below         
+      35 -  panic("use fakeChanneler")                                   
+      36 -}                                                              
+      37 -                                                               
+      38 -type fakeChanneler struct {                                    
+      39 -  channelErr error                                             
+      40 -  opens      atomic.Int32                                      
+      41 -  chFactory  func() *fakeChannel                               
+      42 -}                                                              
+      43 -                                                               
+      44 -func (f *fakeChanneler) Channel() (*amqp.Channel, error) {     
+      45 -  panic("not used")                                            
+      46 -}                                                              
+      47 -                                                               
+      48 -// channelerFunc lets tests inject a custom Channel() impl.    
+      49 -type channelerFunc func() (*amqp.Channel, error)               
+      50 -                                                               
+      51 -func (fn channelerFunc) Channel() (*amqp.Channel, error) { retu
+         -rn fn() }                                                      
+      52 -                                                               
+      53 -// publisherWithFakeChannel builds a Publisher whose Channel() 
+         -returns a fake.                                                
+      54 -// Since *amqp.Channel is a concrete type, we wrap via the amqp
+         -Channel interface                                              
+      55 -// by patching publishToExchange directly in tests via a testab
+         -le wrapper.                                                    
+      56 -                                                               
+      57 -// --- tests use a small adapter that replaces conn.Channel wit
+         -h a fake ---                                                   
+      58 -                                                               
+      59 -type fakeChannelConn struct {                                  
+      60 -  opens   atomic.Int32                                         
+      61 -  makeErr error                                                
+      62 -  ch      func() channelPublisher                              
+      63 -}                                                              
+      64 -                                                               
+      65 -type channelPublisher interface {                              
+      66 -  Publish(exchange, key string, mandatory, immediate bool, msg 
+         -amqp.Publishing) error                                         
+      67 -  Close() error                                                
+      68 -}                                                              
+      69 -                                                               
+      70 -// We can't inject fakeChannel via channeler because channeler 
+         -returns *amqp.Channel.                                         
+      71 -// So we test publishToExchange indirectly via a thin wrapper t
+         -hat exposes the same logic.                                    
+      72 -                                                               
+      73 -func publishViaConn(conn channeler, exchange, key string, paylo
+         -ad any) error {                                                
+      74 -  p := NewPublisher(conn)                                      
+      75 -  return p.publishToExchange(exchange, key, payload)           
+      76 -}                                                              
+      77 -                                                               
+      78 -func TestPublisher_OpensNewChannelPerPublish(t *testing.T) {   
+      79 -  // We can only test channel-open count via ResilientConn.Chan
+         -nel() real behavior,                                           
+      80 -  // so here we verify that a publish error on open triggers re
+         -try.                                                           
+      16 +func TestPublisher_RetriesOnChannelOpenFailure(t *testing.T) { 
+      17    var attempts atomic.Int32
+      82 -  // inject a conn that fails Channel() twice then succeeds via
+         - real amqp — we                                                
+      83 -  // simulate by counting calls and returning error.           
+      18    p := &Publisher{conn: connFunc(func() (*amqp.Channel, error) 
+          {
+      19      attempts.Add(1)
+      20      return nil, errors.New("channel/connection is not open")
+     ...
+       28      t.Errorf("want 3 attempts, got %d", attempts.Load())
+       29    }
+       30  }
+       97 -                                                              
+       98 -func TestPublisher_SucceedsOnRetry(t *testing.T) {            
+       99 -  var attempts atomic.Int32                                   
+      100 -  p := &Publisher{conn: connFunc(func() (*amqp.Channel, error)
+          - {                                                            
+      101 -    n := attempts.Add(1)                                      
+      102 -    if n < 3 {                                                
+      103 -      return nil, errors.New("channel/connection is not open")
+      104 -    }                                                         
+      105 -    return nil, errors.New("still no real broker in unit test"
+          -)                                                             
+      106 -  })}                                                         
+      107 -                                                              
+      108 -  // All 3 attempts fail (no real broker), but we verify attem
+          -pt count = 3.                                                 
+      109 -  _ = p.publishToExchange("", "q", "payload")                 
+      110 -  if attempts.Load() != 3 {                                   
+      111 -    t.Errorf("want 3 Channel() calls, got %d", attempts.Load()
+          -)                                                             
+      112 -  }                                                           
+      113 -}                                                             
+      114 -                                                              
+      115 -// connFunc adapts a func to the channeler interface.         
+      116 -type connFunc func() (*amqp.Channel, error)                   
+      117 -                                                              
+      118 -func (f connFunc) Channel() (*amqp.Channel, error) { return f(
+          -) }                                                           
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... 2>&1)
+  ⎿  ok         uala/internal/messaging/rabbitmq        1.460s
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Todo compila y los tests pasan. El archivo publisher.go quedó así:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Qué cambió y por qué:
+
+  Antes: el publisher tenía un canal compartido (p.ch) protegido con mutex.
+  Todos los goroutines hacían fila para publicar sobre ese único canal. Cuando
+  RabbitMQ cerraba el canal por sobrecarga, el error bloqueaba a todos.
+
+  Ahora: cada publishToExchange abre un canal fresco, publica, y lo cierra. Los
+  canales AMQP son objetos livianos (multiplexados sobre la conexión TCP), así
+  que esto es correcto y es el patrón recomendado para publishers concurrentes.
+  Si el canal no se puede abrir (conexión en proceso de reconexión), reintenta
+  hasta 3 veces con backoff de 0/300/600ms.
+
+✻ Crunched for 1m 41s
+
+❯ este cambio puede hacer que /timeline responda en 1s?                         
+
+⏺ Sí. Con 3 reintentos y backoff de 300ms+600ms, el peor caso es ~900ms solo de
+  sleeps, más el tiempo de Channel() en cada intento. El timeline puede tardar
+  1s+ cuando RabbitMQ está saturado.
+
+  El problema real: PublishUserActivity es fire-and-forget (el error ya se
+  loguea y se ignora), pero el usecase la llama de forma bloqueante. Hay que
+  moverla a una goroutine.
+
+⏺ Update(internal/usecase/timeline.go)
+  ⎿  Added 6 lines, removed 6 lines
+      33      return nil, err
+      34    }
+      35    if uc.activityPub != nil {
+      36 -    if pubErr := uc.activityPub.PublishUserActivity(ctx, domain
+         -.UserActivityEvent{                                            
+      37 -      UserID:     userID,                                      
+      38 -      LastActive: time.Now(),                                  
+      39 -    }); pubErr != nil {                                        
+      40 -      log.Printf("usecase: publish user activity for %s: %v", u
+         -serID, pubErr)                                                 
+      41 -    }                                                          
+      36 +    evt := domain.UserActivityEvent{UserID: userID, LastActive:
+         + time.Now()}                                                   
+      37 +    go func() {                                                
+      38 +      if pubErr := uc.activityPub.PublishUserActivity(context.B
+         +ackground(), evt); pubErr != nil {                             
+      39 +        log.Printf("usecase: publish user activity for %s: %v",
+         + userID, pubErr)                                               
+      40 +      }                                                        
+      41 +    }()                                                        
+      42    }
+      43    return items, nil
+      44  }
+
+⏺ Bash(go build ./... && go test ./internal/usecase/... 2>&1)
+  ⎿  Error: Exit code 1
+     --- FAIL: TestTimelineUseCase_GetTimeline_PublishesUserActivity (0.00s)
+         timeline_test.go:70: want 1 UserActivity event, got 0
+     2026/05/02 16:55:16 ERROR publish tweet event 
+     tweet_id=6855368b-f119-4a87-a38c-7dae9361b783 err="not found"
+     FAIL
+     FAIL       uala/internal/usecase   0.551s
+     FAIL
+
+  Read 1 file (ctrl+o to expand)
+⏺ El test verifica el publish sincrónicamente pero ahora es async. Agrego un
+  pequeño sleep en el test para darle tiempo a la goroutine.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/usecase/timeline_test.go)
+  ⎿  Added 2 lines, removed 1 line
+      61  
+      62    before := time.Now()
+      63    _, err := uc.GetTimeline(context.Background(), userID)
+      64 -  after := time.Now()                                          
+      64    if err != nil {
+      65      t.Fatalf("unexpected error: %v", err)
+      66    }
+      67 +  time.Sleep(20 * time.Millisecond) // publish runs in a gorout
+         +ine                                                            
+      68 +  after := time.Now()                                          
+      69  
+      70    if len(pub.calls) != 1 {
+      71      t.Fatalf("want 1 UserActivity event, got %d", len(pub.calls
+          ))
+
+⏺ Bash(go test ./internal/usecase/... 2>&1)
+  ⎿  ok         uala/internal/usecase   0.359s
+
+⏺ Pasan. El cambio es de una línea en el usecase: el publish de actividad se
+  despacha en una goroutine y el timeline responde de inmediato sin importar
+  cuánto tarde o falle RabbitMQ.
+
+✻ Brewed for 54s
+
+※ recap: Mejorando el sistema de monitoring y load testing. Arreglamos el dashboard de Grafana, el publisher de RabbitMQ para usar un canal por mensaje, y movimos el publish de actividad a una goroutine para no bloquear /timeline. Podés volver a correr el load test.

@@ -1,0 +1,572 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ hay alguna metrica de @internal/metrics/metrics.go que le falten grafico en   
+  grafana?                                                                      
+  ⎿  Read internal/metrics/metrics.go (86 lines)
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+⏺ Todas las métricas están cubiertas. Las 12 métricas definidas en metrics.go
+  tienen al menos un panel en el dashboard de Grafana:
+
+  ┌───────────────────────────────────┬───────┐
+  │              Métrica              │ Panel │
+  ├───────────────────────────────────┼───────┤
+  │ http_request_duration_seconds     │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ http_requests_total               │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ timeline_cache_hits_total         │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ timeline_cache_misses_total       │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ fanout_duration_seconds           │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ rabbitmq_messages_processed_total │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ rabbitmq_messages_failed_total    │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ rabbitmq_queue_depth              │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ db_query_duration_seconds         │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ db_connections_active             │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ db_errors_total                   │ ✓     │
+  ├───────────────────────────────────┼───────┤
+  │ fanout_dead_letter_total          │ ✓     │
+  └───────────────────────────────────┴───────┘
+
+  No falta ningún gráfico.
+
+✻ Baked for 15s
+
+❯ en /Users/gonza/Katas/uala/internal/repository/postgres/follow.go el defer    
+  rows.Close() no deberia estar antes del primer if err?                        
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ No, el orden es correcto. El patrón estándar en Go es:
+
+  rows, err := r.db.Query(...)
+  if err != nil {
+      return nil, err   // rows es nil aquí, Close() haría panic
+  }
+  defer rows.Close()    // solo se registra si Query tuvo éxito
+
+  Si pusieras el defer rows.Close() antes del if err, llamarías Close() sobre un
+   rows nulo cuando Query falla, lo que causaría un panic. El código actual está
+   bien.
+
+✻ Worked for 6s
+
+❯ ningun test que crea cosas en la base de datos checkea que realmente se hayan 
+   creado correctamente                                                         
+
+⏺ Skill(superpowers:brainstorming)
+  ⎿  Successfully loaded skill
+
+  Searched for 2 patterns, read 3 files (ctrl+o to expand)
+
+⏺ Tenés razón. Los tests Create solo verifican que no hay error, pero no que los
+   datos quedaron bien guardados.
+
+  Los candidatos son:
+  - TestUserRepository_Create — no verifica que el usuario existe en la DB con
+  los campos correctos
+  - TestFollowRepository_Create — no verifica que la fila en follows quedó
+  persistida
+  - TestTweetRepository_Create — no verifica content, user_id, etc. en la DB
+
+  ¿Querés que agregue read-backs directos con testDB.QueryRow (como ya se hace
+  en TestUserRepository_UpdateLastActive_SetsValue), o preferís que los Create
+  tests usen el método GetByID/Exists del mismo repositorio para verificar?
+
+✻ Churned for 41s
+
+❯ read-backs directos                                                           
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Now I have all the context I need. Let me add the read-backs to the three
+  Create tests.
+
+⏺ Update(internal/repository/postgres/user_test.go)
+  ⎿  Added 16 lines, removed 1 line
+      12  func TestUserRepository_Create(t *testing.T) {
+      13    r := setup(t)
+      14  
+      15 -  u := &domain.User{ID: uuid.New(), Username: "alice", CreatedA
+         -t: time.Now().UTC()}                                           
+      15 +  u := &domain.User{ID: uuid.New(), Username: "alice", CreatedA
+         +t: time.Now().UTC().Truncate(time.Microsecond)}                
+      16    if err := r.user.Create(context.Background(), u); err != nil 
+          {
+      17      t.Fatalf("Create: %v", err)
+      18    }
+      19 +                                                               
+      20 +  var gotUsername string                                       
+      21 +  var gotCreatedAt time.Time                                   
+      22 +  err := testDB.QueryRow(context.Background(),                 
+      23 +    `SELECT username, created_at FROM users WHERE id = $1`, u.I
+         +D,                                                             
+      24 +  ).Scan(&gotUsername, &gotCreatedAt)                          
+      25 +  if err != nil {                                              
+      26 +    t.Fatalf("read-back: %v", err)                             
+      27 +  }                                                            
+      28 +  if gotUsername != u.Username {                               
+      29 +    t.Errorf("want username %q, got %q", u.Username, gotUsernam
+         +e)                                                             
+      30 +  }                                                            
+      31 +  if !gotCreatedAt.Equal(u.CreatedAt) {                        
+      32 +    t.Errorf("want created_at %v, got %v", u.CreatedAt, gotCrea
+         +tedAt)                                                         
+      33 +  }                                                            
+      34  }
+      35  
+      36  func TestUserRepository_Create_DuplicateUsername(t *testing.T) 
+          {
+
+⏺ Update(internal/repository/postgres/follow_test.go)
+  ⎿  Added 20 lines, removed 1 line
+      24    alice := seedUser(t, r.user, "alice")
+      25    bob := seedUser(t, r.user, "bob")
+      26  
+      27 -  f := &domain.Follow{FollowerID: alice.ID, FolloweeID: bob.ID,
+         - CreatedAt: time.Now().UTC()}                                  
+      27 +  f := &domain.Follow{FollowerID: alice.ID, FolloweeID: bob.ID,
+         + CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}       
+      28    if err := r.follow.Create(context.Background(), f); err != ni
+          l {
+      29      t.Fatalf("Create: %v", err)
+      30    }
+      31 +                                                               
+      32 +  var gotFollowerID, gotFolloweeID uuid.UUID                   
+      33 +  var gotCreatedAt time.Time                                   
+      34 +  err := testDB.QueryRow(context.Background(),                 
+      35 +    `SELECT follower_id, followee_id, created_at FROM follows W
+         +HERE follower_id = $1 AND followee_id = $2`,                   
+      36 +    alice.ID, bob.ID,                                          
+      37 +  ).Scan(&gotFollowerID, &gotFolloweeID, &gotCreatedAt)        
+      38 +  if err != nil {                                              
+      39 +    t.Fatalf("read-back: %v", err)                             
+      40 +  }                                                            
+      41 +  if gotFollowerID != alice.ID {                               
+      42 +    t.Errorf("want follower_id %s, got %s", alice.ID, gotFollow
+         +erID)                                                          
+      43 +  }                                                            
+      44 +  if gotFolloweeID != bob.ID {                                 
+      45 +    t.Errorf("want followee_id %s, got %s", bob.ID, gotFollowee
+         +ID)                                                            
+      46 +  }                                                            
+      47 +  if !gotCreatedAt.Equal(f.CreatedAt) {                        
+      48 +    t.Errorf("want created_at %v, got %v", f.CreatedAt, gotCrea
+         +tedAt)                                                         
+      49 +  }                                                            
+      50  }
+      51  
+      52  func TestFollowRepository_Create_Duplicate(t *testing.T) {
+
+⏺ Update(internal/repository/postgres/tweet_test.go)
+  ⎿  Added 20 lines, removed 1 line
+      19      ID:        uuid.New(),
+      20      UserID:    user.ID,
+      21      Content:   "hello world",
+      22 -    CreatedAt: time.Now().UTC(),                               
+      22 +    CreatedAt: time.Now().UTC().Truncate(time.Microsecond),    
+      23    }
+      24    if err := r.tweet.Create(context.Background(), tweet); err !=
+           nil {
+      25      t.Fatalf("Create: %v", err)
+      26    }
+      27 +                                                               
+      28 +  var gotUserID uuid.UUID                                      
+      29 +  var gotContent string                                        
+      30 +  var gotCreatedAt time.Time                                   
+      31 +  err := testDB.QueryRow(context.Background(),                 
+      32 +    `SELECT user_id, content, created_at FROM tweets WHERE id =
+         + $1`, tweet.ID,                                                
+      33 +  ).Scan(&gotUserID, &gotContent, &gotCreatedAt)               
+      34 +  if err != nil {                                              
+      35 +    t.Fatalf("read-back: %v", err)                             
+      36 +  }                                                            
+      37 +  if gotUserID != tweet.UserID {                               
+      38 +    t.Errorf("want user_id %s, got %s", tweet.UserID, gotUserID
+         +)                                                              
+      39 +  }                                                            
+      40 +  if gotContent != tweet.Content {                             
+      41 +    t.Errorf("want content %q, got %q", tweet.Content, gotConte
+         +nt)                                                            
+      42 +  }                                                            
+      43 +  if !gotCreatedAt.Equal(tweet.CreatedAt) {                    
+      44 +    t.Errorf("want created_at %v, got %v", tweet.CreatedAt, got
+         +CreatedAt)                                                     
+      45 +  }                                                            
+      46  }
+      47  
+      48  func TestTweetRepository_Create_UserNotFound(t *testing.T) {
+
+⏺ Los tres tests ahora hacen read-back directo con testDB.QueryRow y verifican
+  los campos persistidos. Agregué Truncate(time.Microsecond) al CreatedAt antes
+  de insertar para que la comparación no falle por la diferencia de precisión
+  entre Go (time.Time) y Postgres (timestamptz).
+✻ Sautéed for 30s
+
+※ recap: Agregamos read-backs directos con testDB.QueryRow a los tres tests Create de repositorios postgres para verificar que los datos se persisten correctamente. No hay nada pendiente, el trabajo está completo.
+
+❯ los tests de redis que apendean cosas no estan mirando el estado final de
+  redis @internal/repository/redis/                                             
+  ⎿  Listed directory internal/repository/redis/
+
+  Read 3 files (ctrl+o to expand)
+
+⏺ Entendido. Los tres tests que hacen AppendTweet verifican el resultado vía
+  GetTimeline — que usa el mismo read path del repo. Necesitan read-backs
+  directos sobre testRDB para las claves timeline:{id} (sorted set) y
+  timeline:data:{id} (hash).
+
+  Voy a agregar los read-backs a TestRedisTimeline_AppendAndGet,
+  TestRedisTimeline_MultipleItems_OrderedByScoreDesc y
+  TestRedisTimeline_AppendTweet_DeduplicatesByTweetID.
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 1 line
+      2  
+      3  import (
+      4    "context"
+      5 +  "encoding/json"                                               
+      6    "fmt"
+      7    "testing"
+      8    "time"
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 24 lines
+      39      t.Fatalf("AppendTweet: %v", err)
+      40    }
+      41  
+      42 +  key := "timeline:" + userID.String()                         
+      43 +  dataKey := "timeline:data:" + userID.String()                
+      44 +                                                               
+      45 +  if n := testRDB.ZCard(context.Background(), key).Val(); n != 
+         +1 {                                                            
+      46 +    t.Errorf("ZCard: want 1, got %d", n)                       
+      47 +  }                                                            
+      48 +  if score := testRDB.ZScore(context.Background(), key, item.ID
+         +.String()).Val(); score != float64(item.CreatedAt.Unix()) {    
+      49 +    t.Errorf("ZScore: want %v, got %v", float64(item.CreatedAt.
+         +Unix()), score)                                                
+      50 +  }                                                            
+      51 +  raw, err := testRDB.HGet(context.Background(), dataKey, item.
+         +ID.String()).Result()                                          
+      52 +  if err != nil {                                              
+      53 +    t.Fatalf("HGet: %v", err)                                  
+      54 +  }                                                            
+      55 +  var stored domain.TweetItem                                  
+      56 +  if err := json.Unmarshal([]byte(raw), &stored); err != nil { 
+      57 +    t.Fatalf("unmarshal: %v", err)                             
+      58 +  }                                                            
+      59 +  if stored.Content != item.Content {                          
+      60 +    t.Errorf("stored content: want %q, got %q", item.Content, s
+         +tored.Content)                                                 
+      61 +  }                                                            
+      62 +  if stored.Username != item.Username {                        
+      63 +    t.Errorf("stored username: want %q, got %q", item.Username,
+         + stored.Username)                                              
+      64 +  }                                                            
+      65 +                                                               
+      66    items, err := repo.GetTimeline(context.Background(), domain.T
+          imelineQuery{UserID: userID, Limit: 500})
+      67    if err != nil {
+      68      t.Fatalf("GetTimeline: %v", err)
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 18 lines
+       95    _ = repo.AppendTweet(context.Background(), userID, older, 0)
+       96    _ = repo.AppendTweet(context.Background(), userID, newer, 0)
+       97  
+       98 +  key := "timeline:" + userID.String()                        
+       99 +  if n := testRDB.ZCard(context.Background(), key).Val(); n !=
+          + 2 {                                                          
+      100 +    t.Errorf("ZCard: want 2, got %d", n)                      
+      101 +  }                                                           
+      102 +  members, err := testRDB.ZRevRange(context.Background(), key,
+          + 0, -1).Result()                                              
+      103 +  if err != nil {                                             
+      104 +    t.Fatalf("ZRevRange: %v", err)                            
+      105 +  }                                                           
+      106 +  if len(members) != 2 {                                      
+      107 +    t.Fatalf("want 2 members, got %d", len(members))          
+      108 +  }                                                           
+      109 +  if members[0] != newer.ID.String() {                        
+      110 +    t.Errorf("first member: want newer tweet ID, got %s", memb
+          +ers[0])                                                       
+      111 +  }                                                           
+      112 +  if members[1] != older.ID.String() {                        
+      113 +    t.Errorf("second member: want older tweet ID, got %s", mem
+          +bers[1])                                                      
+      114 +  }                                                           
+      115 +                                                              
+      116    items, err := repo.GetTimeline(context.Background(), domain.
+           TimelineQuery{UserID: userID, Limit: 500})
+      117    if err != nil {
+      118      t.Fatalf("GetTimeline: %v", err)
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 21 lines
+      220    _ = repo.AppendTweet(context.Background(), userID, base, 0)
+      221    _ = repo.AppendTweet(context.Background(), userID, redeliver
+           ed, 0)
+      222  
+      223 +  key := "timeline:" + userID.String()                        
+      224 +  dataKey := "timeline:data:" + userID.String()               
+      225 +                                                              
+      226 +  if n := testRDB.ZCard(context.Background(), key).Val(); n !=
+          + 1 {                                                          
+      227 +    t.Errorf("ZCard: want 1, got %d", n)                      
+      228 +  }                                                           
+      229 +  if n := testRDB.HLen(context.Background(), dataKey).Val(); n
+          + != 1 {                                                       
+      230 +    t.Errorf("HLen: want 1, got %d", n)                       
+      231 +  }                                                           
+      232 +  raw, err := testRDB.HGet(context.Background(), dataKey, twee
+          +tID.String()).Result()                                        
+      233 +  if err != nil {                                             
+      234 +    t.Fatalf("HGet: %v", err)                                 
+      235 +  }                                                           
+      236 +  var stored domain.TweetItem                                 
+      237 +  if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+      238 +    t.Fatalf("unmarshal: %v", err)                            
+      239 +  }                                                           
+      240 +  if stored.Content != "original" {                           
+      241 +    t.Errorf("HSetNX should preserve original content, got %q"
+          +, stored.Content)                                             
+      242 +  }                                                           
+      243 +                                                              
+      244    items, err := repo.GetTimeline(context.Background(), domain.
+           TimelineQuery{UserID: userID, Limit: 500})
+      245    if err != nil {
+      246      t.Fatalf("GetTimeline: %v", err)
+
+⏺ Bash(go build ./internal/repository/redis/... 2>&1)
+  ⎿  (No output)
+
+⏺ Tres tests actualizados:
+
+  - AppendAndGet — verifica ZCard=1, ZScore igual a CreatedAt.Unix(), y que el
+  HGet del hash deserializa con el content y username correctos.
+  - MultipleItems_OrderedByScoreDesc — verifica ZCard=2 y que ZRevRange devuelve
+   los IDs en orden newer → older.
+  - DeduplicatesByTweetID — verifica ZCard=1, HLen=1, y que el hash conserva el
+  content original (HSetNX no sobreescribe).
+
+✻ Churned for 1m 3s
+
+※ recap: Agregando read-backs directos en tests de repositorios para verificar que los datos se persisten correctamente. Todo listo — podés correr INTEGRATION=1 go test ./internal/repository/... para confirmar.
+
+❯ en /Users/gonza/Katas/uala/internal/usecase/fanout_tweet.go fanoutToFollowers 
+   hace muchas cosas, separalo en metodos para dar verbosidad a lo que hace     
+
+⏺ Skill(golang:usecase-layer)
+  ⎿  Successfully loaded skill
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/usecase/fanout_tweet.go)
+  ⎿  Added 34 lines, removed 21 lines
+       65  
+       66  func (uc *FanoutTweetUseCase) fanoutToFollowers(ctx context.Co
+           ntext, item domain.TweetItem, followers []domain.FollowerActiv
+           ity) error {
+       67    var (
+       68 -    sem      = make(chan struct{}, uc.fanoutWorkers)          
+       69 -    g, gctx  = errgroup.WithContext(ctx)                      
+       70 -    handled  atomic.Int64                                     
+       68 +    sem     = make(chan struct{}, uc.fanoutWorkers)           
+       69 +    g, gctx = errgroup.WithContext(ctx)                       
+       70 +    handled atomic.Int64                                      
+       71      eligible atomic.Int64
+       72    )
+       73  
+       74    for _, fa := range followers {
+       75 -    remaining := uc.activityTTL - time.Since(fa.LastActive)   
+       76 -    if remaining <= 0 {                                       
+       75 +    ttl := uc.remainingTTL(fa)                                
+       76 +    if ttl <= 0 {                                             
+       77        continue
+       78      }
+       79  
+       80      eligible.Add(1)
+       81 -    fid := fa.ID                                              
+       82 -    ttl := remaining                                          
+       81 +    fid, ttl := fa.ID, ttl                                    
+       82      sem <- struct{}{}
+       83      g.Go(func() error {
+       84        defer func() { <-sem }()
+       86 -      if err := uc.fanout.AppendTweet(gctx, fid, item, ttl); e
+          -rr != nil {                                                   
+       87 -        slog.ErrorContext(gctx, "fanout: append tweet", "follo
+          -wer_id", fid, "err", err)                                     
+       88 -        if uc.retryPublisher != nil {                         
+       89 -          if pubErr := uc.retryPublisher.PublishFanoutRetry(ct
+          -x, domain.FanoutRetryEvent{                                   
+       90 -            FollowerID: fid,                                  
+       91 -            Tweet:      item,                                 
+       92 -          }); pubErr != nil {                                 
+       93 -            slog.ErrorContext(ctx, "fanout: publish retry", "f
+          -ollower_id", fid, "err", pubErr)                              
+       94 -            return nil                                        
+       95 -          }                                                   
+       96 -          handled.Add(1)                                      
+       97 -        }                                                     
+       98 -        return nil                                            
+       85 +      if uc.appendToTimeline(gctx, ctx, fid, item, ttl) {     
+       86 +        handled.Add(1)                                        
+       87        }
+      100 -      handled.Add(1)                                          
+       88        return nil
+       89      })
+       90    }
+     ...
+       96    }
+       97    return nil
+       98  }
+       99 +                                                              
+      100 +func (uc *FanoutTweetUseCase) remainingTTL(fa domain.FollowerA
+          +ctivity) time.Duration {                                      
+      101 +  return uc.activityTTL - time.Since(fa.LastActive)           
+      102 +}                                                             
+      103 +                                                              
+      104 +func (uc *FanoutTweetUseCase) appendToTimeline(gctx, ctx conte
+          +xt.Context, followerID domain.FollowerID, item domain.TweetIte
+          +m, ttl time.Duration) (ok bool) {                             
+      105 +  if err := uc.fanout.AppendTweet(gctx, followerID, item, ttl)
+          +; err != nil {                                                
+      106 +    slog.ErrorContext(gctx, "fanout: append tweet", "follower_
+          +id", followerID, "err", err)                                  
+      107 +    return uc.enqueueRetry(ctx, followerID, item)             
+      108 +  }                                                           
+      109 +  return true                                                 
+      110 +}                                                             
+      111 +                                                              
+      112 +func (uc *FanoutTweetUseCase) enqueueRetry(ctx context.Context
+          +, followerID domain.FollowerID, item domain.TweetItem) (ok boo
+          +l) {                                                          
+      113 +  if uc.retryPublisher == nil {                               
+      114 +    return false                                              
+      115 +  }                                                           
+      116 +  if err := uc.retryPublisher.PublishFanoutRetry(ctx, domain.F
+          +anoutRetryEvent{                                              
+      117 +    FollowerID: followerID,                                   
+      118 +    Tweet:      item,                                         
+      119 +  }); err != nil {                                            
+      120 +    slog.ErrorContext(ctx, "fanout: publish retry", "follower_
+          +id", followerID, "err", err)                                  
+      121 +    return false                                              
+      122 +  }                                                           
+      123 +  return true                                                 
+      124 +}                                                             
+
+⏺ Bash(go build ./internal/usecase/... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/usecase
+     internal/usecase/fanout_tweet.go:104:93: undefined: domain.FollowerID
+     internal/usecase/fanout_tweet.go:112:83: undefined: domain.FollowerID
+
+⏺ Update(internal/usecase/fanout_tweet.go)
+  ⎿  Added 2 lines, removed 2 lines
+      101    return uc.activityTTL - time.Since(fa.LastActive)
+      102  }
+      103  
+      104 -func (uc *FanoutTweetUseCase) appendToTimeline(gctx, ctx conte
+          -xt.Context, followerID domain.FollowerID, item domain.TweetIte
+          -m, ttl time.Duration) (ok bool) {                             
+      104 +func (uc *FanoutTweetUseCase) appendToTimeline(gctx, ctx conte
+          +xt.Context, followerID uuid.UUID, item domain.TweetItem, ttl t
+          +ime.Duration) (ok bool) {                                     
+      105    if err := uc.fanout.AppendTweet(gctx, followerID, item, ttl)
+           ; err != nil {
+      106      slog.ErrorContext(gctx, "fanout: append tweet", "follower_
+           id", followerID, "err", err)
+      107      return uc.enqueueRetry(ctx, followerID, item)
+     ...
+      109    return true
+      110  }
+      111  
+      112 -func (uc *FanoutTweetUseCase) enqueueRetry(ctx context.Context
+          -, followerID domain.FollowerID, item domain.TweetItem) (ok boo
+          -l) {                                                          
+      112 +func (uc *FanoutTweetUseCase) enqueueRetry(ctx context.Context
+          +, followerID uuid.UUID, item domain.TweetItem) (ok bool) {    
+      113    if uc.retryPublisher == nil {
+      114      return false
+      115    }
+
+⏺ Update(internal/usecase/fanout_tweet.go)
+  ⎿  Added 1 line
+       7    "sync/atomic"
+       8    "time"
+       9  
+      10 +  "github.com/google/uuid"                                     
+      11    "uala/internal/domain"
+      12  
+      13    "golang.org/x/sync/errgroup"
+
+⏺ Bash(go build ./internal/usecase/... 2>&1)
+  ⎿  (No output)
+⏺ Bash(go test ./internal/usecase/... 2>&1)
+  ⎿  ok         uala/internal/usecase   0.628s
+
+⏺ fanoutToFollowers ahora delega en tres métodos con nombres que cuentan la
+  historia:
+
+  - remainingTTL — calcula cuánto TTL le queda al follower
+  - appendToTimeline — intenta escribir en Redis; si falla, delega en
+  enqueueRetry; devuelve bool indicando si el tweet quedó manejado
+  - enqueueRetry — publica en la cola de reintentos; devuelve bool según si lo
+  consiguió
+
+✻ Cogitated for 37s
+
+❯ la condicion del if de la linea 96 tmb                                        
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/usecase/fanout_tweet.go)
+  ⎿  Added 1 line, removed 1 line
+      93  
+      94    _ = g.Wait()
+      95  
+      96 -  if eligible.Load() > 0 && handled.Load() == 0 {              
+      96 +  if uc.allFanoutsFailed(eligible.Load(), handled.Load()) {    
+      97      return errors.New("all fanout writes failed and no retries 
+          enqueued")
+      98    }
+      99    return nil
+
+⏺ Update(internal/usecase/fanout_tweet.go)
+  ⎿  Added 4 lines
+       99    return nil
+      100  }
+      101  
+      102 +func (uc *FanoutTweetUseCase) allFanoutsFailed(eligible, handl
+          +ed int64) bool {                                              
+      103 +  return eligible > 0 && handled == 0                         
+      104 +}                                                             
+      105 +                                                              
+      106  func (uc *FanoutTweetUseCase) remainingTTL(fa domain.FollowerA
+           ctivity) time.Duration {
+      107    return uc.activityTTL - time.Since(fa.LastActive)
+      108  }
+
+⏺ Bash(go test ./internal/usecase/... 2>&1)
+  ⎿  ok         uala/internal/usecase   0.406s
+
+⏺ Listo. La condición vive ahora en allFanoutsFailed(eligible, handled int64) 
+  bool.
+
+✻ Worked for 16s

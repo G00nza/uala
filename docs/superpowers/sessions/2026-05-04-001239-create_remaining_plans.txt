@@ -1,0 +1,118 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ create plan for all remaining iters
+
+⏺ Skill(superpowers:writing-plans)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the writing-plans skill to create the implementation plan.
+
+  Let me first explore the project to understand what's been done and what
+  iterations remain.
+
+  Searched for 2 patterns, recalled 1 memory (ctrl+o to expand)
+
+⏺ Bash(git log --oneline -20)
+  ⎿  51ef43c feat: iter-1 complete — POST /users, POST /tweets, POST /follo
+     w, GET /timeline
+     6548747 feat: router + main.go wiring — server fully assembled
+     … +14 lines (ctrl+o to expand)
+
+⏺ Good — iters 0 and 1 are done. Let me read the remaining iteration specs and
+  existing plans.
+
+  Read 4 files (ctrl+o to expand)
+
+⏺ Iter-2 plan already exists. I need to build plans for iter-3 (RabbitMQ) and
+  iter-4 (Observability). Let me read the current codebase state to write
+  accurate plans.
+
+  Read 11 files (ctrl+o to expand)
+
+⏺ Let me read the postgres repository implementations to match patterns exactly.
+
+  Read 11 files (ctrl+o to expand)
+
+⏺ I now have everything I need. Writing plans for iter-3 (RabbitMQ) and iter-4
+  (Observability).
+
+⏺ Writing iter-3 plan now.
+
+⏺ Write(docs/superpowers/plans/2026-04-29-iter-3-rabbitmq.md)
+  ⎿  Wrote 1880 lines to
+     docs/superpowers/plans/2026-04-29-iter-3-rabbitmq.md
+      2 # Iter 3 — RabbitMQ Async Messaging Implementation Plan
+      3 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:su
+        plans to implement this plan task-by-task. Steps use checkbox (`-
+         [ ]`) syntax for tracking.
+      5 **Goal:** Decouple Redis fanout from the HTTP request path — `POS
+        T /tweets` and `POST /follow` publish events to RabbitMQ queues a
+      6 nd return immediately; consumers process events asynchronously.
+      7 **Architecture:** `TweetUseCase.CreateTweet` publishes a `TweetIt
+        e.Follow` publishes `{follower_id, followee_id}` to `user.followe
+        d` queue then retur
+     … +2049 lines (ctrl+o to expand)
+
+⏺ Now writing iter-4 (Observability).
+
+⏺ Write(docs/superpowers/plans/2026-04-29-iter-4-observability.md)
+  ⎿  Wrote 1255 lines to
+     docs/superpowers/plans/2026-04-29-iter-4-observability.md
+        anIter 4 — Observability (Prometheus + Grafana) Implementation Pl
+      3 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:su
+        bagent-driven-development (recommended) or superpowers:executing-
+         [ ]`) syntax for tracking.n task-by-task. Steps use checkbox (`-
+      4 
+        dis cache, RabbitMQ, Postgres) and visualize them in a Grafana da
+      6 shboard.
+      7 **Architecture:** A package-level `internal/metrics` package hold
+        P middleware wraps the router to record duration and request coun
+        ts. Redis `TimelineRepository.GetTimeline` increments cache-hi
+     … +1395 lines (ctrl+o to expand)
+
+⏺ Both plans saved. Let me verify they look right and check if router.go needs
+  to be read for Task 9 accuracy.
+
+  Read 1 file (ctrl+o to expand)
+⏺ The timeline handler uses GetTimeline not Get. I need to fix that in the
+  iter-4 plan's Task 9.
+
+⏺ Update(docs/superpowers/plans/2026-04-29-iter-4-observability.md)
+  ⎿  Error editing file
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Update(docs/superpowers/plans/2026-04-29-iter-4-observability.md)
+  ⎿  Added 1 line, removed 1 line
+      912    mux.HandleFunc("POST /users", user.Create)
+      913    mux.HandleFunc("POST /tweets", tweet.Create)
+      914    mux.HandleFunc("POST /follow", follow.Follow)
+      915 -  mux.HandleFunc("GET /timeline", timeline.Get)               
+      915 +  mux.HandleFunc("GET /timeline", timeline.GetTimeline)       
+      916    mux.Handle("GET /metrics", promhttp.Handler())
+      917  
+      918    return metrics.Middleware(mux)
+
+⏺ Plans complete and saved:
+
+  - docs/superpowers/plans/2026-04-29-iter-3-rabbitmq.md — 12 tasks: RabbitMQ
+  infra → domain extensions → usecase refactor (3-arg constructors with
+  publishers) → broker package (client, publishers, consumers) → wire main → E2E
+   smoke test
+  - docs/superpowers/plans/2026-04-29-iter-4-observability.md — 10 tasks:
+  Prometheus/Grafana infra → metrics package → HTTP middleware → pgx tracer →
+  Redis instrumentation → consumer instrumentation → wire in main + router →
+  Grafana dashboard + E2E verification
+
+  Both plans assume the prior iter is complete when they start. Iter-3 is the
+  next one to execute — it starts from current iter-1 state (iter-2 plan already
+   exists and is the prerequisite).
+
+✻ Brewed for 17m 27s
+
+※ recap: Created implementation plans for iter-3 (RabbitMQ async messaging) and iter-4 (Prometheus/Grafana observability). Next: execute the iter-2 Redis plan, then iter-3, then iter-4 in sequence.

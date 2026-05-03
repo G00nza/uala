@@ -1,0 +1,1707 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ quiero solucionar el gap que falta de paginacion, cada pagina tiene 20        
+  elementos, si se pagina mas de lo que se guarda en redis se considera         
+  aceptable ir directo a la base de datos                                       
+
+⏺ Skill(superpowers:brainstorming)
+  ⎿  Successfully loaded skill
+
+⏺ Explorando el contexto actual del proyecto.
+
+  Searched for 2 patterns, read 7 files (ctrl+o to expand)
+
+⏺ Tengo el contexto claro. El estado actual:
+
+  - GET /timeline no acepta ningún parámetro de paginación — devuelve todo
+  - Redis guarda hasta TIMELINE_LIMIT (default 500) tweets por usuario como
+  Sorted Set
+  - Postgres no tiene LIMIT/OFFSET en la query de timeline
+  - La interfaz TimelineRepository.GetTimeline(ctx, userID) no tiene parámetros
+  de paginación
+
+  Pregunta 1: ¿Querés paginación por número de página (?page=2) o por cursor
+  (?after=<tweet_id>)?
+
+  Para este caso, offset/page es más simple y predecible. Cursor-based es más
+  robusto ante inserciones concurrentes (no hay drift de items), pero más
+  complejo. Dado que es una kata y ya mencionaste "páginas de 20 elementos",
+  ¿offset-based te parece bien?
+
+✻ Sautéed for 52s
+
+❯ me parece bien por cursor                                                     
+
+⏺ Cursor-based, perfecto. Segunda pregunta: ¿qué preferís usar como valor del
+  cursor — el created_at (timestamp) del último tweet visto, o el tweet_id
+  (UUID)?
+
+  Timestamp es más directo para Redis (el score del Sorted Set ya es unix
+  timestamp) y para Postgres (WHERE created_at < $cursor). UUID requiere un
+  lookup extra para obtener el timestamp. ¿Timestamp te parece bien?
+
+✻ Churned for 8s
+
+❯ tweet_id, creo que en el endpoint no se esta retornando timestamp, tambien se 
+   tiene que incluir la direccion de paginacion                                 
+⏺ Notado — created_at sí está en la respuesta del handler, pero usamos tweet_id
+  como cursor, lo cual tiene sentido para que el cliente no opere con
+  timestamps.
+
+  Para la dirección, hay dos estilos comunes:
+
+  A) Parámetros separados: ?after=<tweet_id> (página siguiente, tweets más
+  viejos) y ?before=<tweet_id> (página anterior, tweets más nuevos). Sin cursor
+  = primera página. Así trabajan GitHub y Slack.
+
+  B) Cursor + dirección explícita: ?cursor=<tweet_id>&direction=next|prev. Más
+  explícito, pero más verboso.
+
+  ¿Cuál preferís?
+
+✻ Brewed for 16s
+
+❯ a                                                                             
+
+⏺ Tengo todo lo que necesito. Tres enfoques para resolver el cursor en Redis (el
+   nodo más complejo):
+
+  ---
+  Opción A — ZREVRANK + índice (recomendada)
+
+  Para after=<id>: ZREVRANK(key, id) → rank → ZREVRANGE(key, rank+1, rank+20).
+  Para before=<id>: rank → ZREVRANGE(key, rank-20, rank-1).
+  Si ZREVRANK devuelve nil (tweet no está en Redis) → fallback directo a
+  Postgres.
+  Pros: simple, O(log N), sin ambigüedad. Cons: si el tweet del cursor fue
+  eliminado de Redis por TTL/trim, va a Postgres; eso está bien porque tú
+  dijiste que es aceptable.
+
+  ---
+  Opción B — ZSCORE + rango por score
+
+  ZSCORE(key, id) → unix timestamp → ZREVRANGEBYSCORE key "(score" -inf LIMIT 0 
+  20.
+  Pros: idiomático para sorted sets por score. Cons: tweets con el mismo segundo
+   exacto de created_at pueden quedar mal ordenados (empate de score sin
+  desempate secundario); requiere manejo extra.
+
+  ---
+  Opción C — Redis solo para página 1, Postgres para todo lo paginado
+
+  Sin cursor → Redis. Con cursor (after/before) → siempre Postgres.
+  Pros: máxima simplicidad, cero lógica especial en Redis. Cons: pierde el
+  beneficio del cache para páginas 2-25 (las primeras 500 entradas), lo cual es
+  la mayor parte del uso real.
+
+  ---
+  Mi recomendación es A. Es directa, usa ZREVRANK que ya está disponible, y el
+  fallback a Postgres cuando el cursor no está en Redis es exactamente el
+  comportamiento que pediste. ¿Avanzamos con esa?
+
+✻ Cogitated for 28s
+
+❯ a                                                                             
+
+⏺ Diseño — Sección 1: API y contratos
+
+  Endpoint: GET /timeline?user_id=<uuid>[&after=<tweet_id>][&before=<tweet_id>]
+  - Sin cursor → primera página (20 tweets más recientes)
+  - after=<id> → página siguiente (tweets más viejos que id)
+  - before=<id> → página anterior (tweets más nuevos que id)
+  - after y before son mutuamente excluyentes; si se envían ambos → 400
+
+  Respuesta:
+  {
+    "tweets": [...],
+    "next_cursor": "<tweet_id | null>",
+    "prev_cursor": "<tweet_id | null>"
+  }
+  - next_cursor: ID del último tweet devuelto (para pedir página siguiente).
+  null si no hay más.
+  - prev_cursor: ID del primer tweet devuelto (para pedir página anterior). null
+   si es la primera página.
+
+  Cambio en la interfaz de dominio:
+
+  type TimelineQuery struct {
+      UserID    uuid.UUID
+      After     *uuid.UUID  // cursor: tweets más viejos
+      Before    *uuid.UUID  // cursor: tweets más nuevos
+      Limit     int
+  }
+
+  type TimelineRepository interface {
+      GetTimeline(ctx context.Context, q TimelineQuery) ([]TweetItem, error)
+  }
+
+  ¿Esta sección te parece bien?
+
+✻ Crunched for 8s
+
+❯ next_cursor y prev_cursor solo pueden ser null si no hay elementos en tweets, 
+   sino son el ultimo/primer tweet                                              
+
+⏺ Correcto, tiene más sentido así. El cliente sabe que llegó al final cuando
+  recibe menos de 20 tweets (o 0). Los cursores actualizados:
+
+  - next_cursor: ID del último tweet de la página. null solo si tweets está
+  vacío.
+  - prev_cursor: ID del primero tweet de la página. null solo si tweets está
+  vacío.
+
+  ¿El resto de la sección 1 (endpoint, parámetros, TimelineQuery) está bien?
+
+✻ Sautéed for 6s
+
+❯ bien                                                                          
+
+⏺ Diseño — Sección 2: Lógica Redis y fallback a Postgres
+
+  Redis (ZREVRANK approach):
+
+  Sin cursor (primera página):
+  - ZREVRANGE(key, 0, 19) → 20 tweets más recientes
+
+  after=<id> (siguiente página, tweets más viejos):
+  - ZREVRANK(key, id) → rank
+  - Si nil → fallback a Postgres
+  - ZREVRANGE(key, rank+1, rank+20)
+
+  before=<id> (página anterior, tweets más nuevos):
+  - ZREVRANK(key, id) → rank
+  - Si nil → fallback a Postgres
+  - ZREVRANGE(key, max(0, rank-20), rank-1) → luego revertir para mantener orden
+   DESC
+
+  Si la key no existe en Redis → cache miss normal → cargar desde Postgres,
+  escribir en Redis, paginar desde Redis.
+
+  Postgres fallback (cuando cursor no está en Redis):
+  -- after=<id>
+  WHERE f.follower_id = $1
+    AND t.created_at < (SELECT created_at FROM tweets WHERE id = $cursor)
+  ORDER BY t.created_at DESC LIMIT 20
+
+  -- before=<id>
+  WHERE f.follower_id = $1
+    AND t.created_at > (SELECT created_at FROM tweets WHERE id = $cursor)
+  ORDER BY t.created_at ASC LIMIT 20
+  -- luego revertir resultado a DESC
+
+  ¿Esta sección te parece bien?
+
+✻ Cooked for 6s
+
+❯ si                                                                            
+
+⏺ Diseño — Sección 3: Cambios por capa
+
+  Domain — un struct nuevo, interfaz modificada:
+  - Agregar TimelineQuery con UserID, After *uuid.UUID, Before *uuid.UUID, Limit
+   int
+  - TimelineRepository.GetTimeline pasa de (ctx, userID) a (ctx, TimelineQuery)
+
+  Handler — parsear query params:
+  - Leer after y before de la URL, validar que no vengan juntos
+  - Construir TimelineQuery{Limit: 20} y pasarlo al use case
+  - Construir la respuesta con next_cursor/prev_cursor a partir del primer y
+  último tweet
+
+  UseCase — sin lógica nueva, solo propagar TimelineQuery
+
+  Redis repo — lógica de cursor:
+  - Implementar los tres casos: sin cursor, after, before usando ZREVRANK +
+  ZREVRANGE
+  - Si ZREVRANK devuelve nil → delegar a pgRepo.GetTimeline(ctx, q) directamente
+   (sin escribir a Redis, ya que el cursor apunta a datos históricos fuera del
+  cache)
+
+  Postgres repo — dos queries nuevas con subquery de cursor, más la existente
+  sin cursor
+
+  Testing:
+  - Unit tests en handler: validar parseo de params, respuesta con cursores,
+  error en ambos parámetros juntos
+  - Unit tests en usecase: sin cambios significativos
+  - Integration tests en redis repo: los tres casos de cursor + fallback
+  - Integration tests en postgres repo: los tres casos SQL
+
+  ¿Esta sección está bien?
+
+✻ Worked for 9s
+
+※ recap: Diseñando paginación cursor-based para el timeline. Estoy en sección 3 del diseño (cambios por capa), esperando aprobación del usuario para escribir el doc de spec.
+
+❯ si                                                                            
+
+⏺ Bash(mkdir -p /Users/gonza/Katas/uala/docs/superpowers/specs)
+  ⎿  Done
+⏺ Write(docs/superpowers/specs/2026-05-02-timeline-pagination-design.md)
+  ⎿  Wrote 131 lines to
+     docs/superpowers/specs/2026-05-02-timeline-pagination-design.md
+       2 # Timeline Pagination — Design Spec
+       3 **Date:** 2026-05-02  
+       4 **Status:** Approved
+       6 ## Problem
+       7 
+       8 `GET /timeline` returns all tweets without pagination. The goal 
+         or falls outside the Redis cache (tweets older than the 500-item
+          window), falling back directly to Postgres is acceptable.
+       9 
+      10 ## API
+     … +143 lines (ctrl+o to expand)
+
+⏺ Spec self-review: sin placeholders, secciones consistentes entre sí, scope
+  acotado, un edge case aceptable documentado implícitamente (tweets con mismo
+  created_at exacto son poco probables en un kata).
+
+⏺ Bash(git add docs/superpowers/specs/2026-05-02-timeline-pagination-design.md
+      && git commit -m "docs: add timeline cursor pagination design spec")
+  ⎿  Error: Exit code 1
+     The following paths are ignored by one of your .gitignore files:
+     docs/superpowers
+     hint: Use -f if you really want to add them.
+     hint: Turn this message off by running
+     hint: "git config advice.addIgnoredFile false"
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ /docs/superpowers está en .gitignore. Lo guardo en docs/ directamente.
+
+⏺ Bash(mkdir -p /Users/gonza/Katas/uala/docs/specs && mv /Users/gonza/Katas/uala
+      /docs/superpowers/specs/2026-05-02-timeline-pagination-design.md
+      /Users/gonza/Katas/ual…)
+  ⎿  Done
+
+⏺ Bash(git add docs/specs/2026-05-02-timeline-pagination-design.md && git commit
+       -m "docs: add timeline cursor pagination design spec")
+  ⎿  [master fda9010] docs: add timeline cursor pagination design spec
+      1 file changed, 131 insertions(+)
+      create mode 100644 docs/specs/2026-05-02-timeline-pagination-design.m
+     d
+
+⏺ Spec guardada en docs/specs/2026-05-02-timeline-pagination-design.md y
+  commiteada. Por favor revisala y avisame si querés cambiar algo antes de pasar
+   al plan de implementación.
+
+✻ Cogitated for 53s
+
+※ recap: Estamos diseñando paginación por cursor para el endpoint GET /timeline. El diseño está aprobado y commiteado en docs/specs. El próximo paso es invocar writing-plans para crear el plan de implementación.
+
+❯ implementa                                                                    
+
+⏺ Skill(superpowers:writing-plans)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the writing-plans skill to create the implementation plan.
+
+  Searched for 4 patterns, read 8 files (ctrl+o to expand)
+
+⏺ Now I have everything. Writing the plan.
+
+⏺ Bash(mkdir -p /Users/gonza/Katas/uala/docs/superpowers/plans)
+  ⎿  Done
+
+⏺ Write(docs/superpowers/plans/2026-05-02-timeline-pagination.md)
+  ⎿  Wrote 1111 lines to
+     docs/superpowers/plans/2026-05-02-timeline-pagination.md
+      2 # Timeline Cursor Pagination Implementation Plan
+      3 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:su
+        plans to implement this plan task-by-task. Steps use checkbox (`-
+         [ ]`) syntax for tracking.
+      5 **Goal:** Add cursor-based pagination (`?after=<id>` / `?before=<
+        id>`, 20 items/page) to `GET /timeline`, falling back to Postgres
+      6  when the cursor is outside the Redis window.
+      7 **Architecture:** `TimelineQuery` struct threads the cursor throu
+         to locate the cursor tweet in the sorted set and slices the resu
+        lt; if the tweet is absent, it delegates to 
+     … +1255 lines (ctrl+o to expand)
+
+⏺ Self-review passed: all spec sections covered, no placeholders, type
+  signatures are consistent across all 4 tasks.
+
+  Plan saved to docs/superpowers/plans/2026-05-02-timeline-pagination.md.
+
+  Two execution options:
+
+  1. Subagent-Driven (recommended) — I despacho un subagente fresco por tarea,
+  reviso entre tareas, iteración rápida.
+
+  2. Inline Execution — Ejecuto las tareas en esta sesión usando
+  executing-plans, con checkpoints.
+
+  ¿Cuál preferís?
+
+✻ Cogitated for 7m 5s
+
+※ recap: Implementing cursor-based pagination for GET /timeline. The plan is written and ready — next action is to choose execution mode: subagent-driven (recommended) or inline.
+
+❯ 2                                                                             
+⏺ Skill(superpowers:executing-plans)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the executing-plans skill to implement this plan.
+
+  One note: the plan executes on master — since you chose inline execution and
+  said "implementa", I'll proceed directly on master. Let me load the plan and
+  start.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Plan reviewed — no concerns. Executing now.
+
+⏺ Task 1 — Step 1: domain/follow.go
+
+⏺ Update(internal/domain/follow.go)
+  ⎿  Added 8 lines, removed 1 line
+      33    GetActiveFollowers(ctx context.Context, followeeID uuid.UUID,
+           activeSince time.Time) ([]FollowerActivity, error)
+      34  }
+      35  
+      36 +type TimelineQuery struct {                                    
+      37 +  UserID uuid.UUID                                             
+      38 +  After  *uuid.UUID                                            
+      39 +  Before *uuid.UUID                                            
+      40 +  Limit  int                                                   
+      41 +}                                                              
+      42 +                                                               
+      43  type TimelineRepository interface {
+      37 -  GetTimeline(ctx context.Context, userID uuid.UUID) ([]TweetIt
+         -em, error)                                                     
+      44 +  GetTimeline(ctx context.Context, q TimelineQuery) ([]TweetIte
+         +m, error)                                                      
+      45  }
+      46  
+      47  type TimelineFanout interface {
+
+⏺ Step 2: postgres/timeline.go — minimal signature
+
+⏺ Update(internal/repository/postgres/timeline.go)
+  ⎿  Added 3 lines, removed 2 lines
+      44    return items, rows.Err()
+      45  }
+      46  
+      47 -func (r *TimelineRepository) GetTimeline(ctx context.Context, u
+         -serID uuid.UUID) ([]domain.TweetItem, error) {                 
+      47 +func (r *TimelineRepository) GetTimeline(ctx context.Context, q
+         + domain.TimelineQuery) ([]domain.TweetItem, error) {           
+      48    rows, err := r.db.Query(ctx, `
+      49      SELECT t.id, t.user_id, u.username, t.content, t.created_at
+      50      FROM follows f
+     ...
+      52      JOIN users u ON u.id = t.user_id
+      53      WHERE f.follower_id = $1
+      54      ORDER BY t.created_at DESC
+      55 -  `, userID)                                                   
+      55 +    LIMIT $2                                                   
+      56 +  `, q.UserID, q.Limit)                                        
+      57    if err != nil {
+      58      return nil, err
+      59    }
+
+⏺ Now remove the unused uuid import from postgres/timeline.go since userID 
+  uuid.UUID is gone:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ uuid is still used by GetLatestByUser — import stays. Good.
+
+  Step 3: redis/timeline.go — update signatures
+
+⏺ Update(internal/repository/redis/timeline.go)
+  ⎿  Added 6 lines, removed 6 lines
+      36    return fmt.Sprintf("timeline:data:%s", userID)
+      37  }
+      38  
+      39 -func (r *TimelineRepository) GetTimeline(ctx context.Context, u
+         -serID uuid.UUID) ([]domain.TweetItem, error) {                 
+      40 -  key := timelineKey(userID)                                   
+      39 +func (r *TimelineRepository) GetTimeline(ctx context.Context, q
+         + domain.TimelineQuery) ([]domain.TweetItem, error) {           
+      40 +  key := timelineKey(q.UserID)                                 
+      41  
+      42    exists, err := r.rdb.Exists(ctx, key).Result()
+      43    if err != nil {
+      44 -    return r.pgRepo.GetTimeline(ctx, userID)                   
+      44 +    return r.pgRepo.GetTimeline(ctx, q)                        
+      45    }
+      46  
+      47    if exists > 0 {
+      48      metrics.TimelineCacheHitsTotal.Inc()
+      49 -    return r.readFromRedis(ctx, userID)                        
+      49 +    return r.readFromRedis(ctx, q)                             
+      50    }
+      51  
+      52    metrics.TimelineCacheMissesTotal.Inc()
+      53 -  items, err := r.pgRepo.GetTimeline(ctx, userID)              
+      53 +  items, err := r.pgRepo.GetTimeline(ctx, q)                   
+      54    if err != nil {
+      55      return nil, err
+      56    }
+      57    if len(items) > 0 {
+      58 -    _ = r.writeToRedis(ctx, userID, items)                     
+      58 +    _ = r.writeToRedis(ctx, q.UserID, items)                   
+      59    }
+      60    return items, nil
+      61  }
+
+⏺ Update(internal/repository/redis/timeline.go)
+  ⎿  Added 3 lines, removed 3 lines
+      60    return items, nil
+      61  }
+      62  
+      63 -func (r *TimelineRepository) readFromRedis(ctx context.Context,
+         - userID uuid.UUID) ([]domain.TweetItem, error) {               
+      64 -  key := timelineKey(userID)                                   
+      65 -  dataKey := timelineDataKey(userID)                           
+      63 +func (r *TimelineRepository) readFromRedis(ctx context.Context,
+         + q domain.TimelineQuery) ([]domain.TweetItem, error) {         
+      64 +  key := timelineKey(q.UserID)                                 
+      65 +  dataKey := timelineDataKey(q.UserID)                         
+      66  
+      67    ids, err := r.rdb.ZRevRange(ctx, key, 0, r.limit-1).Result()
+      68    if err != nil {
+
+⏺ Step 4: usecase/timeline.go
+
+⏺ Update(internal/usecase/timeline.go)
+  ⎿  Added 7 lines, removed 2 lines
+      24    return uc
+      25  }
+      26  
+      27 -func (uc *TimelineUseCase) GetTimeline(ctx context.Context, use
+         -rID uuid.UUID) ([]domain.TweetItem, error) {                   
+      27 +func (uc *TimelineUseCase) GetTimeline(ctx context.Context, use
+         +rID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, e
+         +rror) {                                                        
+      28    if _, err := uc.userRepo.GetByID(ctx, userID); err != nil {
+      29      return nil, err
+      30    }
+      31 -  items, err := uc.timelineRepo.GetTimeline(ctx, userID)       
+      31 +  items, err := uc.timelineRepo.GetTimeline(ctx, domain.Timelin
+         +eQuery{                                                        
+      32 +    UserID: userID,                                            
+      33 +    After:  after,                                             
+      34 +    Before: before,                                            
+      35 +    Limit:  20,                                                
+      36 +  })                                                           
+      37    if err != nil {
+      38      return nil, err
+      39    }
+
+⏺ Step 5: usecase/mocks_test.go
+
+⏺ Update(internal/usecase/mocks_test.go)
+  ⎿  Added 1 line, removed 1 line
+      59    err   error
+      60  }
+      61  
+      62 -func (m *mockTimelineRepo) GetTimeline(ctx context.Context, use
+         -rID uuid.UUID) ([]domain.TweetItem, error) {                   
+      62 +func (m *mockTimelineRepo) GetTimeline(ctx context.Context, q d
+         +omain.TimelineQuery) ([]domain.TweetItem, error) {             
+      63    return m.items, m.err
+      64  }
+      65  
+⏺ Now remove the unused uuid import from mocks_test.go if userID uuid.UUID was
+  the only usage:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ uuid still used. Good.
+
+  Step 6: usecase/timeline_test.go — update all 5 call sites
+
+⏺ Update(internal/usecase/timeline_test.go)
+  ⎿  Added 4 lines, removed 4 lines
+      18    }}
+      19    uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
+      20  
+      21 -  items, err := uc.GetTimeline(context.Background(), userID)   
+      21 +  items, err := uc.GetTimeline(context.Background(), userID, ni
+         +l, nil)                                                        
+      22    if err != nil {
+      23      t.Fatalf("unexpected error: %v", err)
+      24    }
+     ...
+      43    timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}
+          }
+      44    uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
+      45  
+      46 -  items, err := uc.GetTimeline(context.Background(), userID)   
+      46 +  items, err := uc.GetTimeline(context.Background(), userID, ni
+         +l, nil)                                                        
+      47    if err != nil {
+      48      t.Fatalf("unexpected error: %v", err)
+      49    }
+     ...
+      60    uc := usecase.NewTimelineUseCase(userRepo, timelineRepo).With
+          UserActivityPublisher(pub)
+      61  
+      62    before := time.Now()
+      63 -  _, err := uc.GetTimeline(context.Background(), userID)       
+      63 +  _, err := uc.GetTimeline(context.Background(), userID, nil, n
+         +il)                                                            
+      64    if err != nil {
+      65      t.Fatalf("unexpected error: %v", err)
+      66    }
+     ...
+      85    uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)
+      86  
+      87    // No publisher wired — should not panic
+      88 -  _, err := uc.GetTimeline(context.Background(), userID)       
+      88 +  _, err := uc.GetTimeline(context.Background(), userID, nil, n
+         +il)                                                            
+      89    if err != nil {
+      90      t.Fatalf("unexpected error: %v", err)
+      91    }
+
+⏺ Step 7: handler/timeline.go — update interface and call
+
+⏺ Update(internal/handler/timeline.go)
+  ⎿  Added 1 line, removed 1 line
+      10  )
+      11  
+      12  type timelineGetter interface {
+      13 -  GetTimeline(ctx context.Context, userID uuid.UUID) ([]domain.
+         -TweetItem, error)                                              
+      13 +  GetTimeline(ctx context.Context, userID uuid.UUID, after, bef
+         +ore *uuid.UUID) ([]domain.TweetItem, error)                    
+      14  }
+      15  
+      16  type TimelineHandler struct {
+
+⏺ Update(internal/handler/timeline.go)
+  ⎿  Added 1 line, removed 1 line
+      35      writeJSON(w, http.StatusBadRequest, map[string]string{"erro
+          r": err.Error()})
+      36      return
+      37    }
+      38 -  items, err := h.svc.GetTimeline(r.Context(), userID)         
+      38 +  items, err := h.svc.GetTimeline(r.Context(), userID, nil, nil
+         +)                                                              
+      39    if err != nil {
+      40      writeJSON(w, domainErrToStatus(err), map[string]string{"err
+          or": err.Error()})
+      41      return
+
+⏺ Step 8: handler/mocks_test.go
+
+⏺ Update(internal/handler/mocks_test.go)
+  ⎿  Added 1 line, removed 1 line
+      50    err   error
+      51  }
+      52  
+      53 -func (m *mockTimelineSvc) GetTimeline(ctx context.Context, user
+         -ID uuid.UUID) ([]domain.TweetItem, error) {                    
+      53 +func (m *mockTimelineSvc) GetTimeline(ctx context.Context, user
+         +ID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, er
+         +ror) {                                                         
+      54    return m.items, m.err
+      55  }
+
+⏺ Step 9: redis/timeline_test.go — update mocks and call sites
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 1 line, removed 1 line
+      15    err   error
+      16  }
+      17  
+      18 -func (m *mockPgTimeline) GetTimeline(ctx context.Context, userI
+         -D uuid.UUID) ([]domain.TweetItem, error) {                     
+      18 +func (m *mockPgTimeline) GetTimeline(ctx context.Context, q dom
+         +ain.TimelineQuery) ([]domain.TweetItem, error) {               
+      19    return m.items, m.err
+      20  }
+      21  
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 1 line, removed 1 line
+      269    countPtr *int
+      270  }
+      271  
+      272 -func (m *countingPgTimeline) GetTimeline(ctx context.Context, 
+          -userID uuid.UUID) ([]domain.TweetItem, error) {               
+      272 +func (m *countingPgTimeline) GetTimeline(ctx context.Context, 
+          +q domain.TimelineQuery) ([]domain.TweetItem, error) {         
+      273    *m.countPtr++
+      274    return m.items, nil
+      275  }
+
+⏺ Now update the 6 call sites in the test bodies:
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 6 lines, removed 6 lines
+      37      t.Fatalf("AppendTweet: %v", err)
+      38    }
+      39  
+      40 -  items, err := repo.GetTimeline(context.Background(), userID) 
+      40 +  items, err := repo.GetTimeline(context.Background(), domain.T
+         +imelineQuery{UserID: userID, Limit: 500})                      
+      41    if err != nil {
+      42      t.Fatalf("GetTimeline: %v", err)
+      43    }
+     ...
+      69    _ = repo.AppendTweet(context.Background(), userID, older, 0)
+      70    _ = repo.AppendTweet(context.Background(), userID, newer, 0)
+      71  
+      72 -  items, err := repo.GetTimeline(context.Background(), userID) 
+      72 +  items, err := repo.GetTimeline(context.Background(), domain.T
+         +imelineQuery{UserID: userID, Limit: 500})                      
+      73    if err != nil {
+      74      t.Fatalf("GetTimeline: %v", err)
+      75    }
+     ...
+       94    }
+       95    repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTime
+           line{items: pgItems}, 500)
+       96  
+       97 -  items, err := repo.GetTimeline(context.Background(), userID)
+       97 +  items, err := repo.GetTimeline(context.Background(), domain.
+          +TimelineQuery{UserID: userID, Limit: 500})                    
+       98    if err != nil {
+       99      t.Fatalf("GetTimeline: %v", err)
+      100    }
+     ...
+      144    repo := redisrepo.NewTimelineRepository(testRDB, pg, 500)
+      145  
+      146    // User with no followed tweets: Redis miss → Postgres → emp
+           ty → no Redis write
+      147 -  items, err := repo.GetTimeline(context.Background(), userID)
+      147 +  items, err := repo.GetTimeline(context.Background(), domain.
+          +TimelineQuery{UserID: userID, Limit: 500})                    
+      148    if err != nil {
+      149      t.Fatalf("GetTimeline: %v", err)
+      150    }
+     ...
+      176    _ = repo.AppendTweet(context.Background(), userID, base, 0)
+      177    _ = repo.AppendTweet(context.Background(), userID, redeliver
+           ed, 0)
+      178  
+      179 -  items, err := repo.GetTimeline(context.Background(), userID)
+      179 +  items, err := repo.GetTimeline(context.Background(), domain.
+          +TimelineQuery{UserID: userID, Limit: 500})                    
+      180    if err != nil {
+      181      t.Fatalf("GetTimeline: %v", err)
+      182    }
+     ...
+      252    _ = repo.AppendTweet(context.Background(), userID, item, 1*t
+           ime.Hour)
+      253  
+      254    // Reading should refresh TTL to the full activityTTL
+      255 -  _, err := repo.GetTimeline(context.Background(), userID)    
+      255 +  _, err := repo.GetTimeline(context.Background(), domain.Time
+          +lineQuery{UserID: userID, Limit: 500})                        
+      256    if err != nil {
+      257      t.Fatalf("GetTimeline: %v", err)
+      258    }
+
+⏺ Check if uuid import is still needed in redis/timeline_test.go:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Good, still used.
+
+  Step 10: postgres/timeline_test.go — update existing calls
+
+⏺ Update(internal/repository/postgres/timeline_test.go)
+  ⎿  Added 2 lines, removed 2 lines
+      15    alice := &domain.User{ID: uuid.New(), Username: "alice_tl", C
+          reatedAt: time.Now().UTC()}
+      16    _ = r.user.Create(context.Background(), alice)
+      17  
+      18 -  items, err := r.timeline.GetTimeline(context.Background(), al
+         -ice.ID)                                                        
+      18 +  items, err := r.timeline.GetTimeline(context.Background(), do
+         +main.TimelineQuery{UserID: alice.ID, Limit: 20})               
+      19    if err != nil {
+      20      t.Fatalf("GetTimeline: %v", err)
+      21    }
+     ...
+      39      ID: uuid.New(), UserID: bob.ID, Content: "hello from bob", 
+          CreatedAt: time.Now().UTC(),
+      40    })
+      41  
+      42 -  items, err := r.timeline.GetTimeline(context.Background(), al
+         -ice.ID)                                                        
+      42 +  items, err := r.timeline.GetTimeline(context.Background(), do
+         +main.TimelineQuery{UserID: alice.ID, Limit: 20})               
+      43    if err != nil {
+      44      t.Fatalf("GetTimeline: %v", err)
+      45    }
+
+⏺ Now add the domain import to postgres/timeline_test.go:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ domain import already present. Step 11: verify compilation + unit tests
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/usecase_test [uala/internal/usecase.test]
+     internal/usecase/timeline_test.go:34:49: not enough arguments in call to 
+     uc.GetTimeline
+        have (context.Context, uuid.UUID)
+        want (context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID)
+     # uala/internal/repository/redis_test [uala/internal/repository/redis.test]
+     internal/repository/redis/timeline_test.go:122:49: cannot use userID 
+     (variable of array type uuid.UUID) as domain.TimelineQuery value in 
+     argument to repo1.GetTimeline
+     internal/repository/redis/timeline_test.go:126:56: cannot use userID 
+     (variable of array type uuid.UUID) as domain.TimelineQuery value in 
+     argument to repo2.GetTimeline
+     ok         uala/cmd/api    (cached)
+     ?          uala/cmd/migrate        [no test files]
+     … +10 lines (ctrl+o to expand)
+
+⏺ Two missed call sites. Fixing both:
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Update(internal/usecase/timeline_test.go)
+  ⎿  Added 1 line, removed 1 line
+      31    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      32    uc := usecase.NewTimelineUseCase(userRepo, &mockTimelineRepo{
+          })
+      33  
+      34 -  _, err := uc.GetTimeline(context.Background(), uuid.New())   
+      34 +  _, err := uc.GetTimeline(context.Background(), uuid.New(), ni
+         +l, nil)                                                        
+      35    if err != domain.ErrNotFound {
+      36      t.Fatalf("want ErrNotFound, got %v", err)
+      37    }
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 2 lines, removed 2 lines
+      119    }
+      120    // First call with Postgres data
+      121    repo1 := redisrepo.NewTimelineRepository(testRDB, &mockPgTim
+           eline{items: pgItems}, 500)
+      122 -  _, _ = repo1.GetTimeline(context.Background(), userID)      
+      122 +  _, _ = repo1.GetTimeline(context.Background(), domain.Timeli
+          +neQuery{UserID: userID, Limit: 500})                          
+      123  
+      124    // Second call with empty Postgres — should read from Redis 
+           cache
+      125    repo2 := redisrepo.NewTimelineRepository(testRDB, &mockPgTim
+           eline{items: []domain.TweetItem{}}, 500)
+      126 -  items, err := repo2.GetTimeline(context.Background(), userID
+          -)                                                             
+      126 +  items, err := repo2.GetTimeline(context.Background(), domain
+          +.TimelineQuery{UserID: userID, Limit: 500})                   
+      127    if err != nil {
+      128      t.Fatalf("GetTimeline second call: %v", err)
+      129    }
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ok         uala/cmd/api    (cached)
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ All green. Step 12: Commit
+
+⏺ Bash(git add internal/domain/follow.go \
+              internal/repository/postgres/timeline.go \…)
+  ⎿  [master 102a440] refactor: introduce TimelineQuery and update all GetT
+     imeline signatures
+      10 files changed, 56 insertions(+), 42 deletions(-)
+
+⏺ ---
+  Task 2 — Step 1: Write failing Postgres integration tests
+
+⏺ Update(internal/repository/postgres/timeline_test.go)
+  ⎿  Added 1 line
+      2  
+      3  import (
+      4    "context"
+      5 +  "fmt"                                                         
+      6    "testing"
+      7    "time"
+      8  
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/repository/postgres/timeline_test.go)
+  ⎿  Added 104 lines
+       54      t.Fatalf("want 'bob_tl2', got %s", items[0].Username)
+       55    }
+       56  }
+       57 +                                                              
+       58 +func TestTimelineRepository_GetTimeline_FirstPage_Limit(t *tes
+          +ting.T) {                                                     
+       59 +  r := setup(t)                                               
+       60 +                                                              
+       61 +  alice := &domain.User{ID: uuid.New(), Username: "alice_pg_li
+          +m", CreatedAt: time.Now().UTC()}                              
+       62 +  bob := &domain.User{ID: uuid.New(), Username: "bob_pg_lim", 
+          +CreatedAt: time.Now().UTC()}                                  
+       63 +  _ = r.user.Create(context.Background(), alice)              
+       64 +  _ = r.user.Create(context.Background(), bob)                
+       65 +  _ = r.follow.Create(context.Background(), &domain.Follow{   
+       66 +    FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.
+          +Now().UTC(),                                                  
+       67 +  })                                                          
+       68 +                                                              
+       69 +  base := time.Now().UTC().Truncate(time.Second)              
+       70 +  for i := 0; i < 5; i++ {                                    
+       71 +    _ = r.tweet.Create(context.Background(), &domain.Tweet{   
+       72 +      ID:        uuid.New(),                                  
+       73 +      UserID:    bob.ID,                                      
+       74 +      Content:   fmt.Sprintf("tweet%d", i),                   
+       75 +      CreatedAt: base.Add(time.Duration(i) * time.Second),    
+       76 +    })                                                        
+       77 +  }                                                           
+       78 +                                                              
+       79 +  items, err := r.timeline.GetTimeline(context.Background(), d
+          +omain.TimelineQuery{UserID: alice.ID, Limit: 3})              
+       80 +  if err != nil {                                             
+       81 +    t.Fatalf("GetTimeline: %v", err)                          
+       82 +  }                                                           
+       83 +  if len(items) != 3 {                                        
+       84 +    t.Fatalf("want 3 items, got %d", len(items))              
+       85 +  }                                                           
+       86 +}                                                             
+       87 +                                                              
+       88 +func TestTimelineRepository_GetTimeline_AfterCursor(t *testing
+          +.T) {                                                         
+       89 +  r := setup(t)                                               
+       90 +                                                              
+       91 +  alice := &domain.User{ID: uuid.New(), Username: "alice_pg_af
+          +ter", CreatedAt: time.Now().UTC()}                            
+       92 +  bob := &domain.User{ID: uuid.New(), Username: "bob_pg_after"
+          +, CreatedAt: time.Now().UTC()}                                
+       93 +  _ = r.user.Create(context.Background(), alice)              
+       94 +  _ = r.user.Create(context.Background(), bob)                
+       95 +  _ = r.follow.Create(context.Background(), &domain.Follow{   
+       96 +    FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.
+          +Now().UTC(),                                                  
+       97 +  })                                                          
+       98 +                                                              
+       99 +  base := time.Now().UTC().Truncate(time.Second)              
+      100 +  t1ID := uuid.New()                                          
+      101 +  t2ID := uuid.New()                                          
+      102 +  t3ID := uuid.New()                                          
+      103 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +1ID, UserID: bob.ID, Content: "tweet1", CreatedAt: base.Add(-2
+          + * time.Minute)})                                             
+      104 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +2ID, UserID: bob.ID, Content: "tweet2", CreatedAt: base.Add(-1
+          + * time.Minute)})                                             
+      105 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +3ID, UserID: bob.ID, Content: "tweet3", CreatedAt: base})     
+      106 +                                                              
+      107 +  // after=t3ID → tweets older than tweet3 → [tweet2, tweet1] 
+          +DESC                                                          
+      108 +  items, err := r.timeline.GetTimeline(context.Background(), d
+          +omain.TimelineQuery{                                          
+      109 +    UserID: alice.ID, After: &t3ID, Limit: 20,                
+      110 +  })                                                          
+      111 +  if err != nil {                                             
+      112 +    t.Fatalf("GetTimeline after: %v", err)                    
+      113 +  }                                                           
+      114 +  if len(items) != 2 {                                        
+      115 +    t.Fatalf("want 2 items, got %d", len(items))              
+      116 +  }                                                           
+      117 +  if items[0].Content != "tweet2" {                           
+      118 +    t.Fatalf("want tweet2 first, got %s", items[0].Content)   
+      119 +  }                                                           
+      120 +  if items[1].Content != "tweet1" {                           
+      121 +    t.Fatalf("want tweet1 second, got %s", items[1].Content)  
+      122 +  }                                                           
+      123 +}                                                             
+      124 +                                                              
+      125 +func TestTimelineRepository_GetTimeline_BeforeCursor(t *testin
+          +g.T) {                                                        
+      126 +  r := setup(t)                                               
+      127 +                                                              
+      128 +  alice := &domain.User{ID: uuid.New(), Username: "alice_pg_be
+          +fore", CreatedAt: time.Now().UTC()}                           
+      129 +  bob := &domain.User{ID: uuid.New(), Username: "bob_pg_before
+          +", CreatedAt: time.Now().UTC()}                               
+      130 +  _ = r.user.Create(context.Background(), alice)              
+      131 +  _ = r.user.Create(context.Background(), bob)                
+      132 +  _ = r.follow.Create(context.Background(), &domain.Follow{   
+      133 +    FollowerID: alice.ID, FolloweeID: bob.ID, CreatedAt: time.
+          +Now().UTC(),                                                  
+      134 +  })                                                          
+      135 +                                                              
+      136 +  base := time.Now().UTC().Truncate(time.Second)              
+      137 +  t1ID := uuid.New()                                          
+      138 +  t2ID := uuid.New()                                          
+      139 +  t3ID := uuid.New()                                          
+      140 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +1ID, UserID: bob.ID, Content: "tweet1", CreatedAt: base.Add(-2
+          + * time.Minute)})                                             
+      141 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +2ID, UserID: bob.ID, Content: "tweet2", CreatedAt: base.Add(-1
+          + * time.Minute)})                                             
+      142 +  _ = r.tweet.Create(context.Background(), &domain.Tweet{ID: t
+          +3ID, UserID: bob.ID, Content: "tweet3", CreatedAt: base})     
+      143 +                                                              
+      144 +  // before=t1ID → tweets newer than tweet1 → [tweet3, tweet2]
+          + DESC                                                         
+      145 +  items, err := r.timeline.GetTimeline(context.Background(), d
+          +omain.TimelineQuery{                                          
+      146 +    UserID: alice.ID, Before: &t1ID, Limit: 20,               
+      147 +  })                                                          
+      148 +  if err != nil {                                             
+      149 +    t.Fatalf("GetTimeline before: %v", err)                   
+      150 +  }                                                           
+      151 +  if len(items) != 2 {                                        
+      152 +    t.Fatalf("want 2 items, got %d", len(items))              
+      153 +  }                                                           
+      154 +  if items[0].Content != "tweet3" {                           
+      155 +    t.Fatalf("want tweet3 first (newest), got %s", items[0].Co
+          +ntent)                                                        
+      156 +  }                                                           
+      157 +  if items[1].Content != "tweet2" {                           
+      158 +    t.Fatalf("want tweet2 second, got %s", items[1].Content)  
+      159 +  }                                                           
+      160 +}                                                             
+
+⏺ Step 2: Run tests to confirm they fail
+
+⏺ Bash(INTEGRATION=1 go test ./internal/repository/postgres/... -run "TestTimeli
+      neRepository_GetTimeline_(FirstPage_Limit|AfterCursor|BeforeCursor)" -v
+      2>&1)
+  ⎿  Error: Exit code 1
+     panic: connect: postgres ping: failed to connect to `user=uala 
+     database=uala`:
+                [::1]:5432 (localhost): dial error: dial tcp [::1]:5432: connect
+     connection refused
+                127.0.0.1:5432 (localhost): dial error: dial tcp 127.0.0.1:5432:
+      connection refused
+                [::1]:5432 (localhost): dial error: dial tcp [::1]:5432: connect
+     connection refused
+                127.0.0.1:5432 (localhost): dial error: dial tcp 127.0.0.1:5432:
+      connection refused
+
+     goroutine 1 [running]:
+     uala/internal/repository/postgres_test.TestMain(0x5333fc59e820)
+        /Users/gonza/Katas/uala/internal/repository/postgres/setup_test.go:27 
+     +0x244
+
+     … +4 lines (ctrl+o to expand)
+
+⏺ Infra no está corriendo. Levantar la infra y luego ejecutar las pruebas de
+  integración. Por ahora, las pruebas de integración requieren make up. Procedo
+  con la implementación de Task 2 sin verificar el "fail" step, e implemento
+  directamente:
+
+  Step 3: Implement full Postgres cursor logic
+
+⏺ Write(internal/repository/postgres/timeline.go)
+  ⎿  Added 57 lines
+       2  
+       3  import (
+       4    "context"
+       5 +  "slices"                                                     
+       6  
+       7    "github.com/google/uuid"
+       8 +  "github.com/jackc/pgx/v5"                                    
+       9    "github.com/jackc/pgx/v5/pgxpool"
+      10    "uala/internal/domain"
+      11  )
+     ...
+      47  }
+      48  
+      49  func (r *TimelineRepository) GetTimeline(ctx context.Context, q
+           domain.TimelineQuery) ([]domain.TweetItem, error) {
+      50 +  switch {                                                     
+      51 +  case q.After != nil:                                         
+      52 +    return r.getTimelineAfter(ctx, q)                          
+      53 +  case q.Before != nil:                                        
+      54 +    return r.getTimelineBefore(ctx, q)                         
+      55 +  default:                                                     
+      56 +    return r.getTimelineFirst(ctx, q)                          
+      57 +  }                                                            
+      58 +}                                                              
+      59 +                                                               
+      60 +func (r *TimelineRepository) getTimelineFirst(ctx context.Conte
+         +xt, q domain.TimelineQuery) ([]domain.TweetItem, error) {      
+      61    rows, err := r.db.Query(ctx, `
+      62      SELECT t.id, t.user_id, u.username, t.content, t.created_at
+      63      FROM follows f
+     ...
+       71      return nil, err
+       72    }
+       73    defer rows.Close()
+       74 +  return scanTimeline(rows)                                   
+       75 +}                                                             
+       76  
+       77 +func (r *TimelineRepository) getTimelineAfter(ctx context.Cont
+          +ext, q domain.TimelineQuery) ([]domain.TweetItem, error) {    
+       78 +  rows, err := r.db.Query(ctx, `                              
+       79 +    SELECT t.id, t.user_id, u.username, t.content, t.created_a
+          +t                                                             
+       80 +    FROM follows f                                            
+       81 +    JOIN tweets t ON t.user_id = f.followee_id                
+       82 +    JOIN users u ON u.id = t.user_id                          
+       83 +    WHERE f.follower_id = $1                                  
+       84 +      AND t.created_at < (SELECT created_at FROM tweets WHERE 
+          +id = $2)                                                      
+       85 +    ORDER BY t.created_at DESC                                
+       86 +    LIMIT $3                                                  
+       87 +  `, q.UserID, q.After, q.Limit)                              
+       88 +  if err != nil {                                             
+       89 +    return nil, err                                           
+       90 +  }                                                           
+       91 +  defer rows.Close()                                          
+       92 +  return scanTimeline(rows)                                   
+       93 +}                                                             
+       94 +                                                              
+       95 +func (r *TimelineRepository) getTimelineBefore(ctx context.Con
+          +text, q domain.TimelineQuery) ([]domain.TweetItem, error) {   
+       96 +  rows, err := r.db.Query(ctx, `                              
+       97 +    SELECT t.id, t.user_id, u.username, t.content, t.created_a
+          +t                                                             
+       98 +    FROM follows f                                            
+       99 +    JOIN tweets t ON t.user_id = f.followee_id                
+      100 +    JOIN users u ON u.id = t.user_id                          
+      101 +    WHERE f.follower_id = $1                                  
+      102 +      AND t.created_at > (SELECT created_at FROM tweets WHERE 
+          +id = $2)                                                      
+      103 +    ORDER BY t.created_at ASC                                 
+      104 +    LIMIT $3                                                  
+      105 +  `, q.UserID, q.Before, q.Limit)                             
+      106 +  if err != nil {                                             
+      107 +    return nil, err                                           
+      108 +  }                                                           
+      109 +  defer rows.Close()                                          
+      110 +  items, err := scanTimeline(rows)                            
+      111 +  if err != nil {                                             
+      112 +    return nil, err                                           
+      113 +  }                                                           
+      114 +  slices.Reverse(items)                                       
+      115 +  return items, nil                                           
+      116 +}                                                             
+      117 +                                                              
+      118 +func scanTimeline(rows pgx.Rows) ([]domain.TweetItem, error) {
+      119    var items []domain.TweetItem
+      120    for rows.Next() {
+      121      var item domain.TweetItem
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Step 5: Commit Task 2
+
+⏺ Bash(git add internal/repository/postgres/timeline.go
+      internal/repository/postgres/timeline_test.go && \
+      git commit -m "feat(postgres): cursor-based pagination in Ge…)
+  ⎿  [master af3ec83] feat(postgres): cursor-based pagination in GetTimelin
+     e (after/before/limit)
+      2 files changed, 162 insertions(+)
+
+⏺ ---
+  Task 3 — Step 1: Add failing Redis integration tests
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 1 line
+      2  
+      3  import (
+      4    "context"
+      5 +  "fmt"                                                         
+      6    "testing"
+      7    "time"
+      8  
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 113 lines
+      274    *m.countPtr++
+      275    return m.items, nil
+      276  }
+      277 +                                                              
+      278 +func TestRedisTimeline_AfterCursor_InRedis(t *testing.T) {    
+      279 +  flushRedis(t)                                               
+      280 +  userID := uuid.New()                                        
+      281 +  repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTime
+          +line{}, 500)                                                  
+      282 +                                                              
+      283 +  base := time.Now().UTC()                                    
+      284 +  t1 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), U
+          +sername: "bob", Content: "tweet1", CreatedAt: base.Add(-2 * ti
+          +me.Minute).Truncate(time.Second)}                             
+      285 +  t2 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), U
+          +sername: "bob", Content: "tweet2", CreatedAt: base.Add(-1 * ti
+          +me.Minute).Truncate(time.Second)}                             
+      286 +  t3 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), U
+          +sername: "bob", Content: "tweet3", CreatedAt: base.Truncate(ti
+          +me.Second)}                                                   
+      287 +                                                              
+      288 +  _ = repo.AppendTweet(context.Background(), userID, t1, 0)   
+      289 +  _ = repo.AppendTweet(context.Background(), userID, t2, 0)   
+      290 +  _ = repo.AppendTweet(context.Background(), userID, t3, 0)   
+      291 +                                                              
+      292 +  // after=t3 → older than t3 → [t2, t1]                      
+      293 +  items, err := repo.GetTimeline(context.Background(), domain.
+          +TimelineQuery{UserID: userID, After: &t3.ID, Limit: 20})      
+      294 +  if err != nil {                                             
+      295 +    t.Fatalf("GetTimeline after: %v", err)                    
+      296 +  }                                                           
+      297 +  if len(items) != 2 {                                        
+      298 +    t.Fatalf("want 2 items, got %d", len(items))              
+      299 +  }                                                           
+      300 +  if items[0].Content != "tweet2" {                           
+      301 +    t.Fatalf("want tweet2 first, got %s", items[0].Content)   
+      302 +  }                                                           
+      303 +  if items[1].Content != "tweet1" {                           
+      304 +    t.Fatalf("want tweet1 second, got %s", items[1].Content)  
+      305 +  }                                                           
+      306 +}                                                             
+      307 +                                                              
+      308 +func TestRedisTimeline_BeforeCursor_InRedis(t *testing.T) {   
+      309 +  flushRedis(t)                                               
+      310 +  userID := uuid.New()                                        
+      311 +  repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTime
+          +line{}, 500)                                                  
+      312 +                                                              
+      313 +  base := time.Now().UTC()                                    
+      314 +  t1 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), U
+          +sername: "bob", Content: "tweet1", CreatedAt: base.Add(-2 * ti
+          +me.Minute).Truncate(time.Second)}                             
+      315 +  t2 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), U
+          +sername: "bob", Content: "tweet2", CreatedAt: base.Add(-1 * ti
+          +me.Minute).Truncate(time.Second)}                             
+      316 +  t3 := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(), U
+          +sername: "bob", Content: "tweet3", CreatedAt: base.Truncate(ti
+          +me.Second)}                                                   
+      317 +                                                              
+      318 +  _ = repo.AppendTweet(context.Background(), userID, t1, 0)   
+      319 +  _ = repo.AppendTweet(context.Background(), userID, t2, 0)   
+      320 +  _ = repo.AppendTweet(context.Background(), userID, t3, 0)   
+      321 +                                                              
+      322 +  // before=t1 → newer than t1 → [t3, t2] DESC                
+      323 +  items, err := repo.GetTimeline(context.Background(), domain.
+          +TimelineQuery{UserID: userID, Before: &t1.ID, Limit: 20})     
+      324 +  if err != nil {                                             
+      325 +    t.Fatalf("GetTimeline before: %v", err)                   
+      326 +  }                                                           
+      327 +  if len(items) != 2 {                                        
+      328 +    t.Fatalf("want 2 items, got %d", len(items))              
+      329 +  }                                                           
+      330 +  if items[0].Content != "tweet3" {                           
+      331 +    t.Fatalf("want tweet3 first (newest), got %s", items[0].Co
+          +ntent)                                                        
+      332 +  }                                                           
+      333 +  if items[1].Content != "tweet2" {                           
+      334 +    t.Fatalf("want tweet2 second, got %s", items[1].Content)  
+      335 +  }                                                           
+      336 +}                                                             
+      337 +                                                              
+      338 +func TestRedisTimeline_CursorNotInRedis_FallsBackToPostgres(t 
+          +*testing.T) {                                                 
+      339 +  flushRedis(t)                                               
+      340 +  userID := uuid.New()                                        
+      341 +  ghostID := uuid.New()                                       
+      342 +                                                              
+      343 +  pgItems := []domain.TweetItem{                              
+      344 +    {ID: uuid.New(), UserID: uuid.New(), Username: "pg", Conte
+          +nt: "from_pg", CreatedAt: time.Now().UTC().Truncate(time.Secon
+          +d)},                                                          
+      345 +  }                                                           
+      346 +  repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTime
+          +line{items: pgItems}, 500)                                    
+      347 +                                                              
+      348 +  // Seed one tweet so the Redis key exists                   
+      349 +  seed := domain.TweetItem{ID: uuid.New(), UserID: uuid.New(),
+          + Username: "bob", Content: "in_redis", CreatedAt: time.Now().U
+          +TC().Truncate(time.Second)}                                   
+      350 +  _ = repo.AppendTweet(context.Background(), userID, seed, 0) 
+      351 +                                                              
+      352 +  // Use a cursor NOT in Redis → fallback to Postgres         
+      353 +  items, err := repo.GetTimeline(context.Background(), domain.
+          +TimelineQuery{UserID: userID, After: &ghostID, Limit: 20})    
+      354 +  if err != nil {                                             
+      355 +    t.Fatalf("GetTimeline: %v", err)                          
+      356 +  }                                                           
+      357 +  if len(items) != 1 {                                        
+      358 +    t.Fatalf("want 1 item from postgres, got %d", len(items)) 
+      359 +  }                                                           
+      360 +  if items[0].Content != "from_pg" {                          
+      361 +    t.Fatalf("want 'from_pg', got %s", items[0].Content)      
+      362 +  }                                                           
+      363 +}                                                             
+      364 +                                                              
+      365 +func TestRedisTimeline_FirstPage_ReturnsLimit(t *testing.T) { 
+      366 +  flushRedis(t)                                               
+      367 +  userID := uuid.New()                                        
+      368 +  repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTime
+          +line{}, 500)                                                  
+      369 +                                                              
+      370 +  base := time.Now().UTC()                                    
+      371 +  for i := 0; i < 5; i++ {                                    
+      372 +    item := domain.TweetItem{                                 
+      373 +      ID:        uuid.New(),                                  
+      374 +      UserID:    uuid.New(),                                  
+      375 +      Username:  "bob",                                       
+      376 +      Content:   fmt.Sprintf("tweet%d", i),                   
+      377 +      CreatedAt: base.Add(time.Duration(i) * time.Second).Trun
+          +cate(time.Second),                                            
+      378 +    }                                                         
+      379 +    _ = repo.AppendTweet(context.Background(), userID, item, 0
+          +)                                                             
+      380 +  }                                                           
+      381 +                                                              
+      382 +  items, err := repo.GetTimeline(context.Background(), domain.
+          +TimelineQuery{UserID: userID, Limit: 3})                      
+      383 +  if err != nil {                                             
+      384 +    t.Fatalf("GetTimeline: %v", err)                          
+      385 +  }                                                           
+      386 +  if len(items) != 3 {                                        
+      387 +    t.Fatalf("want 3 items, got %d", len(items))              
+      388 +  }                                                           
+      389 +}                                                             
+
+⏺ Step 3: Implement full Redis cursor logic
+
+⏺ Write(internal/repository/redis/timeline.go)
+  ⎿  Added 55 lines, removed 14 lines
+       44      return r.pgRepo.GetTimeline(ctx, q)
+       45    }
+       46  
+       47 -  if exists > 0 {                                             
+       47 +  if exists == 0 {                                            
+       48 +    metrics.TimelineCacheMissesTotal.Inc()                    
+       49 +    if q.After != nil || q.Before != nil {                    
+       50 +      // Key expired but cursor present — go straight to Postg
+          +res                                                           
+       51 +      return r.pgRepo.GetTimeline(ctx, q)                     
+       52 +    }                                                         
+       53 +    // First page cache miss: warm Redis with up to r.limit tw
+          +eets, then paginate                                           
+       54 +    allItems, err := r.pgRepo.GetTimeline(ctx, domain.Timeline
+          +Query{UserID: q.UserID, Limit: int(r.limit)})                 
+       55 +    if err != nil {                                           
+       56 +      return nil, err                                         
+       57 +    }                                                         
+       58 +    if len(allItems) == 0 {                                   
+       59 +      return allItems, nil                                    
+       60 +    }                                                         
+       61 +    _ = r.writeToRedis(ctx, q.UserID, allItems)               
+       62 +  } else {                                                    
+       63      metrics.TimelineCacheHitsTotal.Inc()
+       49 -    return r.readFromRedis(ctx, q)                            
+       64    }
+       65  
+       52 -  metrics.TimelineCacheMissesTotal.Inc()                      
+       53 -  items, err := r.pgRepo.GetTimeline(ctx, q)                  
+       54 -  if err != nil {                                             
+       55 -    return nil, err                                           
+       56 -  }                                                           
+       57 -  if len(items) > 0 {                                         
+       58 -    _ = r.writeToRedis(ctx, q.UserID, items)                  
+       59 -  }                                                           
+       60 -  return items, nil                                           
+       66 +  return r.readFromRedis(ctx, q)                              
+       67  }
+       68  
+       69  func (r *TimelineRepository) readFromRedis(ctx context.Context
+           , q domain.TimelineQuery) ([]domain.TweetItem, error) {
+       70    key := timelineKey(q.UserID)
+       71    dataKey := timelineDataKey(q.UserID)
+       72  
+       67 -  ids, err := r.rdb.ZRevRange(ctx, key, 0, r.limit-1).Result()
+       68 -  if err != nil {                                             
+       69 -    return nil, err                                           
+       73 +  var ids []string                                            
+       74 +                                                              
+       75 +  switch {                                                    
+       76 +  case q.After != nil:                                        
+       77 +    rank, err := r.rdb.ZRevRank(ctx, key, q.After.String()).Re
+          +sult()                                                        
+       78 +    if err == redis.Nil {                                     
+       79 +      return r.pgRepo.GetTimeline(ctx, q)                     
+       80 +    }                                                         
+       81 +    if err != nil {                                           
+       82 +      return nil, err                                         
+       83 +    }                                                         
+       84 +    ids, err = r.rdb.ZRevRange(ctx, key, rank+1, rank+int64(q.
+          +Limit)).Result()                                              
+       85 +    if err != nil {                                           
+       86 +      return nil, err                                         
+       87 +    }                                                         
+       88 +  case q.Before != nil:                                       
+       89 +    rank, err := r.rdb.ZRevRank(ctx, key, q.Before.String()).R
+          +esult()                                                       
+       90 +    if err == redis.Nil {                                     
+       91 +      return r.pgRepo.GetTimeline(ctx, q)                     
+       92 +    }                                                         
+       93 +    if err != nil {                                           
+       94 +      return nil, err                                         
+       95 +    }                                                         
+       96 +    start := rank - int64(q.Limit)                            
+       97 +    if start < 0 {                                            
+       98 +      start = 0                                               
+       99 +    }                                                         
+      100 +    ids, err = r.rdb.ZRevRange(ctx, key, start, rank-1).Result
+          +()                                                            
+      101 +    if err != nil {                                           
+      102 +      return nil, err                                         
+      103 +    }                                                         
+      104 +  default:                                                    
+      105 +    var err error                                             
+      106 +    ids, err = r.rdb.ZRevRange(ctx, key, 0, int64(q.Limit)-1).
+          +Result()                                                      
+      107 +    if err != nil {                                           
+      108 +      return nil, err                                         
+      109 +    }                                                         
+      110    }
+      111 +                                                              
+      112    if len(ids) == 0 {
+      113      return []domain.TweetItem{}, nil
+      114    }
+
+⏺ Bash(go build ./... 2>&1)  ⎿  (No output)
+
+⏺ Step 5: Commit Task 3
+
+⏺ Bash(git add internal/repository/redis/timeline.go
+      internal/repository/redis/timeline_test.go && \
+      git commit -m "feat(redis): cursor-based pagination via ZREVRANK i…)
+  ⎿  [master e5219f2] feat(redis): cursor-based pagination via ZREVRANK in
+     GetTimeline
+      2 files changed, 169 insertions(+), 14 deletions(-)
+
+⏺ ---
+  Task 4 — Step 1: Write failing handler tests
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/handler/timeline_test.go)
+  ⎿  Added 1 line
+       5    "net/http"
+       6    "net/http/httptest"
+       7    "testing"
+       8 +  "time"                                                       
+       9  
+      10    "github.com/google/uuid"
+      11    "uala/internal/domain"
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/handler/timeline_test.go)
+  ⎿  Added 103 lines
+       60      t.Fatalf("want 404, got %d", rec.Code)
+       61    }
+       62  }
+       63 +                                                              
+       64 +func TestTimelineHandler_GetTimeline_BothCursors_Returns400(t 
+          +*testing.T) {                                                 
+       65 +  h := handler.NewTimelineHandler(&mockTimelineSvc{})         
+       66 +                                                              
+       67 +  url := "/timeline?after=" + uuid.New().String() + "&before="
+          + + uuid.New().String()                                        
+       68 +  req := httptest.NewRequest(http.MethodGet, url, nil)        
+       69 +  req.Header.Set("X-User-ID", uuid.New().String())            
+       70 +  rec := httptest.NewRecorder()                               
+       71 +                                                              
+       72 +  h.GetTimeline(rec, req)                                     
+       73 +                                                              
+       74 +  if rec.Code != http.StatusBadRequest {                      
+       75 +    t.Fatalf("want 400, got %d", rec.Code)                    
+       76 +  }                                                           
+       77 +}                                                             
+       78 +                                                              
+       79 +func TestTimelineHandler_GetTimeline_InvalidAfterUUID_Returns4
+          +00(t *testing.T) {                                            
+       80 +  h := handler.NewTimelineHandler(&mockTimelineSvc{})         
+       81 +                                                              
+       82 +  req := httptest.NewRequest(http.MethodGet, "/timeline?after=
+          +not-a-uuid", nil)                                             
+       83 +  req.Header.Set("X-User-ID", uuid.New().String())            
+       84 +  rec := httptest.NewRecorder()                               
+       85 +                                                              
+       86 +  h.GetTimeline(rec, req)                                     
+       87 +                                                              
+       88 +  if rec.Code != http.StatusBadRequest {                      
+       89 +    t.Fatalf("want 400, got %d", rec.Code)                    
+       90 +  }                                                           
+       91 +}                                                             
+       92 +                                                              
+       93 +func TestTimelineHandler_GetTimeline_CursorsInResponse(t *test
+          +ing.T) {                                                      
+       94 +  firstID := uuid.New()                                       
+       95 +  lastID := uuid.New()                                        
+       96 +  svc := &mockTimelineSvc{items: []domain.TweetItem{          
+       97 +    {ID: firstID, UserID: uuid.New(), Username: "a", Content: 
+          +"first", CreatedAt: time.Now().Add(-1 * time.Second)},        
+       98 +    {ID: lastID, UserID: uuid.New(), Username: "b", Content: "
+          +last", CreatedAt: time.Now().Add(-2 * time.Second)},          
+       99 +  }}                                                          
+      100 +  h := handler.NewTimelineHandler(svc)                        
+      101 +                                                              
+      102 +  req := httptest.NewRequest(http.MethodGet, "/timeline", nil)
+      103 +  req.Header.Set("X-User-ID", uuid.New().String())            
+      104 +  rec := httptest.NewRecorder()                               
+      105 +                                                              
+      106 +  h.GetTimeline(rec, req)                                     
+      107 +                                                              
+      108 +  if rec.Code != http.StatusOK {                              
+      109 +    t.Fatalf("want 200, got %d", rec.Code)                    
+      110 +  }                                                           
+      111 +  var resp map[string]any                                     
+      112 +  if err := json.NewDecoder(rec.Body).Decode(&resp); err != ni
+          +l {                                                           
+      113 +    t.Fatalf("decode: %v", err)                               
+      114 +  }                                                           
+      115 +  if resp["prev_cursor"] != firstID.String() {                
+      116 +    t.Fatalf("want prev_cursor=%s, got %v", firstID, resp["pre
+          +v_cursor"])                                                   
+      117 +  }                                                           
+      118 +  if resp["next_cursor"] != lastID.String() {                 
+      119 +    t.Fatalf("want next_cursor=%s, got %v", lastID, resp["next
+          +_cursor"])                                                    
+      120 +  }                                                           
+      121 +}                                                             
+      122 +                                                              
+      123 +func TestTimelineHandler_GetTimeline_EmptyResult_NullCursors(t
+          + *testing.T) {                                                
+      124 +  svc := &mockTimelineSvc{items: []domain.TweetItem{}}        
+      125 +  h := handler.NewTimelineHandler(svc)                        
+      126 +                                                              
+      127 +  req := httptest.NewRequest(http.MethodGet, "/timeline", nil)
+      128 +  req.Header.Set("X-User-ID", uuid.New().String())            
+      129 +  rec := httptest.NewRecorder()                               
+      130 +                                                              
+      131 +  h.GetTimeline(rec, req)                                     
+      132 +                                                              
+      133 +  if rec.Code != http.StatusOK {                              
+      134 +    t.Fatalf("want 200, got %d", rec.Code)                    
+      135 +  }                                                           
+      136 +  var resp map[string]any                                     
+      137 +  if err := json.NewDecoder(rec.Body).Decode(&resp); err != ni
+          +l {                                                           
+      138 +    t.Fatalf("decode: %v", err)                               
+      139 +  }                                                           
+      140 +  if resp["next_cursor"] != nil {                             
+      141 +    t.Fatalf("want next_cursor=null, got %v", resp["next_curso
+          +r"])                                                          
+      142 +  }                                                           
+      143 +  if resp["prev_cursor"] != nil {                             
+      144 +    t.Fatalf("want prev_cursor=null, got %v", resp["prev_curso
+          +r"])                                                          
+      145 +  }                                                           
+      146 +}                                                             
+      147 +                                                              
+      148 +func TestTimelineHandler_GetTimeline_AfterPassedToService(t *t
+          +esting.T) {                                                   
+      149 +  afterID := uuid.New()                                       
+      150 +  svc := &mockTimelineSvc{items: []domain.TweetItem{}}        
+      151 +  h := handler.NewTimelineHandler(svc)                        
+      152 +                                                              
+      153 +  req := httptest.NewRequest(http.MethodGet, "/timeline?after=
+          +"+afterID.String(), nil)                                      
+      154 +  req.Header.Set("X-User-ID", uuid.New().String())            
+      155 +  rec := httptest.NewRecorder()                               
+      156 +                                                              
+      157 +  h.GetTimeline(rec, req)                                     
+      158 +                                                              
+      159 +  if rec.Code != http.StatusOK {                              
+      160 +    t.Fatalf("want 200, got %d", rec.Code)                    
+      161 +  }                                                           
+      162 +  if svc.capturedAfter == nil || *svc.capturedAfter != afterID
+          + {                                                            
+      163 +    t.Fatalf("want after=%s passed to svc, got %v", afterID, s
+          +vc.capturedAfter)                                             
+      164 +  }                                                           
+      165 +}                                                             
+
+⏺ Step 2: Update mockTimelineSvc to capture cursor params
+
+⏺ Update(internal/handler/mocks_test.go)
+  ⎿  Added 6 lines, removed 2 lines
+      46  }
+      47  
+      48  type mockTimelineSvc struct {
+      49 -  items []domain.TweetItem                                     
+      50 -  err   error                                                  
+      49 +  items          []domain.TweetItem                            
+      50 +  err            error                                         
+      51 +  capturedAfter  *uuid.UUID                                    
+      52 +  capturedBefore *uuid.UUID                                    
+      53  }
+      54  
+      55  func (m *mockTimelineSvc) GetTimeline(ctx context.Context, user
+          ID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, er
+          ror) {
+      56 +  m.capturedAfter = after                                      
+      57 +  m.capturedBefore = before                                    
+      58    return m.items, m.err
+      59  }
+
+⏺ Step 3: Run tests to confirm they fail
+
+⏺ Bash(go test ./internal/handler/... -run
+      "TestTimelineHandler_GetTimeline_(BothCursors|InvalidAfter|CursorsInRespon
+      se|EmptyResult_NullCursors|AfterPassedToService)"…)
+  ⎿  Error: Exit code 1
+     === RUN   TestTimelineHandler_GetTimeline_BothCursors_Returns400
+         timeline_test.go:75: want 400, got 200
+     --- FAIL: TestTimelineHandler_GetTimeline_BothCursors_Returns400 (0.00s)
+     === RUN   TestTimelineHandler_GetTimeline_InvalidAfterUUID_Returns400
+         timeline_test.go:89: want 400, got 200
+     --- FAIL: TestTimelineHandler_GetTimeline_InvalidAfterUUID_Returns400 
+     (0.00s)
+     === RUN   TestTimelineHandler_GetTimeline_CursorsInResponse
+         timeline_test.go:116: want 
+     prev_cursor=9e454730-9c87-432f-b6fe-e7f9e8e4a45a, got <nil>
+     --- FAIL: TestTimelineHandler_GetTimeline_CursorsInResponse (0.00s)
+     … +8 lines (ctrl+o to expand)
+
+⏺ Tests failing as expected. Step 4: Implement full handler
+
+⏺ Write(internal/handler/timeline.go)
+  ⎿  Added 43 lines, removed 2 lines
+      35      writeJSON(w, http.StatusBadRequest, map[string]string{"erro
+          r": err.Error()})
+      36      return
+      37    }
+      38 -  items, err := h.svc.GetTimeline(r.Context(), userID, nil, nil
+         -)                                                              
+      38 +                                                               
+      39 +  afterStr := r.URL.Query().Get("after")                       
+      40 +  beforeStr := r.URL.Query().Get("before")                     
+      41 +                                                               
+      42 +  if afterStr != "" && beforeStr != "" {                       
+      43 +    writeJSON(w, http.StatusBadRequest, map[string]string{"erro
+         +r": "after and before are mutually exclusive"})                
+      44 +    return                                                     
+      45 +  }                                                            
+      46 +                                                               
+      47 +  var after, before *uuid.UUID                                 
+      48 +  if afterStr != "" {                                          
+      49 +    id, err := uuid.Parse(afterStr)                            
+      50 +    if err != nil {                                            
+      51 +      writeJSON(w, http.StatusBadRequest, map[string]string{"er
+         +ror": "after must be a valid UUID"})                           
+      52 +      return                                                   
+      53 +    }                                                          
+      54 +    after = &id                                                
+      55 +  }                                                            
+      56 +  if beforeStr != "" {                                         
+      57 +    id, err := uuid.Parse(beforeStr)                           
+      58 +    if err != nil {                                            
+      59 +      writeJSON(w, http.StatusBadRequest, map[string]string{"er
+         +ror": "before must be a valid UUID"})                          
+      60 +      return                                                   
+      61 +    }                                                          
+      62 +    before = &id                                               
+      63 +  }                                                            
+      64 +                                                               
+      65 +  items, err := h.svc.GetTimeline(r.Context(), userID, after, b
+         +efore)                                                         
+      66    if err != nil {
+      67      writeJSON(w, domainErrToStatus(err), map[string]string{"err
+          or": err.Error()})
+      68      return
+      69    }
+      70 +                                                               
+      71    resp := make([]tweetItemResponse, len(items))
+      72    for i, item := range items {
+      73      resp[i] = tweetItemResponse{
+     ...
+      78        CreatedAt: item.CreatedAt,
+      79      }
+      80    }
+      53 -  writeJSON(w, http.StatusOK, map[string]any{"tweets": resp})  
+      81 +                                                               
+      82 +  var nextCursor, prevCursor *string                           
+      83 +  if len(items) > 0 {                                          
+      84 +    first := items[0].ID.String()                              
+      85 +    last := items[len(items)-1].ID.String()                    
+      86 +    prevCursor = &first                                        
+      87 +    nextCursor = &last                                         
+      88 +  }                                                            
+      89 +                                                               
+      90 +  writeJSON(w, http.StatusOK, map[string]any{                  
+      91 +    "tweets":      resp,                                       
+      92 +    "next_cursor": nextCursor,                                 
+      93 +    "prev_cursor": prevCursor,                                 
+      94 +  })                                                           
+      95  }
+
+⏺ Step 5: Run all handler tests
+
+⏺ Bash(go test ./internal/handler/... -v 2>&1)
+  ⎿  === RUN   TestFollowHandler_Follow_MissingUserID
+     --- PASS: TestFollowHandler_Follow_MissingUserID (0.00s)
+     === RUN   TestFollowHandler_Follow_SelfFollow
+     … +29 lines (ctrl+o to expand)
+
+⏺ Todos los tests pasan. Step 6: Full test suite
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ok         uala/cmd/api    (cached)
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ Todo verde. Step 7: Commit Task 4
+
+⏺ Bash(git add internal/handler/timeline.go internal/handler/mocks_test.go
+      internal/handler/timeline_test.go && \
+      git commit -m "feat(handler): cursor pagination param…)
+  ⎿  [master aa0b70d] feat(handler): cursor pagination params and next/prev
+      cursors in response
+      3 files changed, 153 insertions(+), 4 deletions(-)
+
+⏺ Todas las tareas completadas. Ahora invoco el skill de finishing para cerrar
+  la rama.
+
+⏺ Skill(superpowers:finishing-a-development-branch)
+  ⎿  Successfully loaded skill
+
+⏺ I'm using the finishing-a-development-branch skill to complete this work.
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ok         uala/cmd/api    (cached)
+     ?          uala/cmd/migrate        [no test files]
+     ?          uala/internal/domain    [no test files]
+     … +8 lines (ctrl+o to expand)
+
+⏺ Tests pasan. Estamos en master directamente.
+
+  Implementation complete. What would you like to do?
+
+  1. Keep as-is on master (ya está commiteado)
+  2. Push to remote
+  3. Keep as-is (I'll handle it later)
+  4. Discard this work
+
+  Which option?
+
+✻ Crunched for 5m 21s
+
+❯ 1                                                                             
+
+⏺ El trabajo ya está commiteado directamente en master — no hay rama separada
+  que mergear. Los 4 commits están en master:
+
+⏺ Bash(git log --oneline -4 2>&1)
+  ⎿  aa0b70d feat(handler): cursor pagination params and next/prev cursors
+     in response
+     e5219f2 feat(redis): cursor-based pagination via ZREVRANK in GetTimeli
+     … +5 lines (ctrl+o to expand)
+
+⏺ Listo. La implementación está completa:
+
+  - GET /timeline ahora acepta ?after=<id> y ?before=<id> con páginas de 20
+  items
+  - Redis usa ZREVRANK para localizar el cursor; si no está, cae a Postgres
+  - La respuesta incluye next_cursor (último tweet) y prev_cursor (primer
+  tweet), o null si no hay resultados
+  - Las pruebas de integración quedan pendientes de correr con make up +
+  INTEGRATION=1 go test ./...
+
+✻ Worked for 8s

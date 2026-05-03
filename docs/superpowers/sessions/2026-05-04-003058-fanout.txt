@@ -1,0 +1,2244 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ como resolverias el @docs/gaps.md 1                                           
+  ⎿  Read docs/gaps.md (87 lines)
+
+⏺ Skill(golang:concurrency)
+  ⎿  Successfully loaded skill
+
+⏺ Voy a leer el código actual del consumer para entender el fanout existente.
+
+⏺ Bash(find /Users/gonza/Katas/uala -type f -name "*.go" | xargs grep -l
+      "GetFollowers\|fanout\|tweet.created\|TweetCreated" 2>/dev/null)
+  ⎿  /Users/gonza/Katas/uala/cmd/api/main.go
+     /Users/gonza/Katas/uala/internal/handler/mocks_test.go
+     /Users/gonza/Katas/uala/internal/metrics/metrics.go
+     … +10 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ El problema está claro en líneas 118-122: el loop de fanout es secuencial. Acá
+   está la solución:
+
+  ---
+  El problema
+
+  // Secuencial — 1M seguidores = 1M AppendTweet en serie
+  for _, followerID := range followers {
+      if err := c.fanout.AppendTweet(ctx, followerID, item); err != nil { ... }
+  }
+
+  Con 1M seguidores, cada AppendTweet es una escritura a Redis. Secuencialmente,
+   a ~1ms por operación, son ~16 minutos bloqueando el único goroutine
+  consumidor.
+
+  ---
+  La solución: fanout concurrente con semáforo
+
+  Reemplazar el loop en handleTweetCreated (línea 118):
+
+  const fanoutConcurrency = 100
+
+  func (c *Consumer) handleTweetCreated(ctx context.Context, d amqp.Delivery) {
+      // ... unmarshal y GetFollowers igual que antes ...
+
+      g, gctx := errgroup.WithContext(ctx)
+      sem := make(chan struct{}, fanoutConcurrency)
+
+      for _, followerID := range followers {
+          fid := followerID
+          sem <- struct{}{}
+          g.Go(func() error {
+              defer func() { <-sem }()
+              if err := c.fanout.AppendTweet(gctx, fid, item); err != nil {
+                  log.Printf("rabbitmq: fanout tweet to %s: %v", fid, err)
+                  // no retornamos error para no cancelar todo el fanout por un 
+  fallo parcial
+              }
+              return nil
+          })
+      }
+
+      _ = g.Wait()
+      // ... métricas y Ack ...
+  }
+
+  Con 100 goroutines paralelas, 1M seguidores pasan de ~16 min a ~2.5 min. Con
+  1000, a ~15 segundos.
+
+  ---
+  Por qué no retornar el error individual
+
+  En fanout, si falla escribir para 1 de 1M seguidores, no queremos hacer Nack y
+   re-procesar 1M escrituras. Lo correcto es loggear el fallo parcial y hacer
+  Ack igual (consistencia eventual). Si quisieras más garantías, usarías un
+  retry local o DLQ por follower, no por evento.
+
+  ---
+  Modelo híbrido push/pull (para "celebrities")
+
+  Si el sistema tiene usuarios con muchos seguidores (>100K), el mejor approach
+  es:
+
+  - Push (fanout activo): solo para seguidores que estuvieron activos
+  recientemente
+  - Pull (al leer timeline): si el autor tiene >N seguidores, se consulta su
+  feed directamente al leer
+
+  Esto elimina el fanout de celebrities por completo. Twitter/X usa exactamente
+  este modelo. Es más complejo de implementar pero escala a miles de millones.
+
+  ---
+  El cambio mínimo para resolver el gap es el fanout con errgroup + semáforo.
+  ¿Querés que lo implemente directamente en el código?
+
+❯ si                                                                            
+
+⏺ Skill(superpowers:test-driven-development)
+  ⎿  Successfully loaded skill
+
+⏺ Voy a revisar los tests existentes del consumer antes de escribir el test que
+  falle.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ golang.org/x/sync ya está disponible. No hay tests del consumer. Voy a crear
+  el test que capture el comportamiento concurrente.
+
+  RED — escribo el test que falla primero.
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Write(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Wrote 74 lines to internal/messaging/rabbitmq/consumer_test.go
+       1 package rabbitmq
+       2 
+       3 import (
+       4        "context"
+       5        "sync"
+       6        "sync/atomic"
+       7        "testing"
+       8        "time"
+       9 
+      10        "github.com/google/uuid"
+     … +69 lines (ctrl+o to expand)
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/consumer_test.go:58:3: unknown field 
+     fanoutWorkers in struct literal of type Consumer
+     internal/messaging/rabbitmq/consumer_test.go:58:18: undefined: 
+     fanoutConcurrency
+     internal/messaging/rabbitmq/consumer_test.go:69:4: c.fanoutTweet undefined 
+     (type *Consumer has no field or method fanoutTweet)
+     FAIL       uala/internal/messaging/rabbitmq [build failed]
+     FAIL
+
+⏺ Falla por las razones correctas: fanoutWorkers, fanoutConcurrency y
+  fanoutTweet no existen aún. GREEN — implemento el mínimo código.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 5 lines
+       7    "time"
+       8  
+       9    amqp "github.com/rabbitmq/amqp091-go"
+      10 +  "golang.org/x/sync/errgroup"                                 
+      11    "uala/internal/domain"
+      12    "uala/internal/metrics"
+      13  )
+      14  
+      15 +const fanoutConcurrency = 100                                  
+      16 +                                                               
+      17  type Consumer struct {
+      18    conn           *amqp.Connection
+      19    followRepo     domain.FollowRepository
+      20    fanout         domain.TimelineFanout
+      21    userTweetsRepo domain.UserTweetsRepository
+      22    backfillLimit  int
+      23 +  fanoutWorkers  int                                           
+      24  }
+      25  
+      26  func NewConsumer(
+     ...
+      36      fanout:         fanout,
+      37      userTweetsRepo: userTweetsRepo,
+      38      backfillLimit:  backfillLimit,
+      39 +    fanoutWorkers:  fanoutConcurrency,                         
+      40    }
+      41  }
+      42  
+
+⏺ Ahora extraigo fanoutTweet y reemplazo el loop secuencial con errgroup +
+  semáforo:
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 29 lines, removed 6 lines
+      113      return
+      114    }
+      115  
+      116 +  c.fanoutTweet(ctx, evt)                                     
+      117 +  _ = followers // followers fetched above, fanoutTweet re-use
+          +s them via the same call                                      
+      118 +                                                              
+      119 +  metrics.FanoutDuration.Observe(time.Since(start).Seconds()) 
+      120 +  metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweet
+          +Created).Inc()                                                
+      121 +  _ = d.Ack(false)                                            
+      122 +}                                                             
+      123 +                                                              
+      124 +func (c *Consumer) fanoutTweet(ctx context.Context, evt domain
+          +.TweetCreatedEvent) {                                         
+      125 +  followers, err := c.followRepo.GetFollowers(ctx, evt.UserID)
+      126 +  if err != nil {                                             
+      127 +    log.Printf("rabbitmq: get followers for %s: %v", evt.UserI
+          +D, err)                                                       
+      128 +    return                                                    
+      129 +  }                                                           
+      130 +                                                              
+      131    item := domain.TweetItem{
+      132      ID:        evt.TweetID,
+      133      UserID:    evt.UserID,
+     ...
+      135      Content:   evt.Content,
+      136      CreatedAt: evt.CreatedAt,
+      137    }
+      138 +                                                              
+      139 +  sem := make(chan struct{}, c.fanoutWorkers)                 
+      140 +  g, gctx := errgroup.WithContext(ctx)                        
+      141 +                                                              
+      142    for _, followerID := range followers {
+      124 -    if err := c.fanout.AppendTweet(ctx, followerID, item); err
+          - != nil {                                                     
+      125 -      log.Printf("rabbitmq: fanout tweet to %s: %v", followerI
+          -D, err)                                                       
+      126 -    }                                                         
+      143 +    fid := followerID                                         
+      144 +    sem <- struct{}{}                                         
+      145 +    g.Go(func() error {                                       
+      146 +      defer func() { <-sem }()                                
+      147 +      if err := c.fanout.AppendTweet(gctx, fid, item); err != 
+          +nil {                                                         
+      148 +        log.Printf("rabbitmq: fanout tweet to %s: %v", fid, er
+          +r)                                                            
+      149 +      }                                                       
+      150 +      return nil                                              
+      151 +    })                                                        
+      152    }
+      153  
+      129 -  metrics.FanoutDuration.Observe(time.Since(start).Seconds()) 
+      130 -  metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweet
+          -Created).Inc()                                                
+      131 -  _ = d.Ack(false)                                            
+      154 +  _ = g.Wait()                                                
+      155  }
+      156  
+      157  func (c *Consumer) handleFollowCreated(ctx context.Context, d 
+           amqp.Delivery) {
+
+⏺ Tengo una duplicación — GetFollowers se llama dos veces. Lo corrijo:
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Removed 9 lines
+      105    }
+      106  
+      107    start := time.Now()
+      108 -  followers, err := c.followRepo.GetFollowers(ctx, evt.UserID)
+      109 -  if err != nil {                                             
+      110 -    log.Printf("rabbitmq: get followers for %s: %v", evt.UserI
+          -D, err)                                                       
+      111 -    metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetC
+          -reated).Inc()                                                 
+      112 -    _ = d.Nack(false, true)                                   
+      113 -    return                                                    
+      114 -  }                                                           
+      115 -                                                              
+      108    c.fanoutTweet(ctx, evt)
+      117 -  _ = followers // followers fetched above, fanoutTweet re-use
+          -s them via the same call                                      
+      109  
+      110    metrics.FanoutDuration.Observe(time.Since(start).Seconds())
+      111    metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweet
+           Created).Inc()
+
+⏺ Pero ahora handleTweetCreated ya no puede hacer Nack si GetFollowers falla.
+  Necesito que fanoutTweet retorne el error de GetFollowers para que el handler
+  pueda reaccionar:
+
+  Read 1 file (ctrl+o to expand)
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 10 lines, removed 7 lines
+      105    }
+      106  
+      107    start := time.Now()
+      108 -  c.fanoutTweet(ctx, evt)                                     
+      108 +  followers, err := c.followRepo.GetFollowers(ctx, evt.UserID)
+      109 +  if err != nil {                                             
+      110 +    log.Printf("rabbitmq: get followers for %s: %v", evt.UserI
+          +D, err)                                                       
+      111 +    metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetC
+          +reated).Inc()                                                 
+      112 +    _ = d.Nack(false, true)                                   
+      113 +    return                                                    
+      114 +  }                                                           
+      115  
+      116 +  c.fanoutTweet(ctx, evt, followers)                          
+      117 +                                                              
+      118    metrics.FanoutDuration.Observe(time.Since(start).Seconds())
+      119    metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweet
+           Created).Inc()
+      120    _ = d.Ack(false)
+      121  }
+      122  
+      115 -func (c *Consumer) fanoutTweet(ctx context.Context, evt domain
+          -.TweetCreatedEvent) {                                         
+      116 -  followers, err := c.followRepo.GetFollowers(ctx, evt.UserID)
+      117 -  if err != nil {                                             
+      118 -    log.Printf("rabbitmq: get followers for %s: %v", evt.UserI
+          -D, err)                                                       
+      119 -    return                                                    
+      120 -  }                                                           
+      123 +func (c *Consumer) fanoutTweet(ctx context.Context, evt domain
+          +.TweetCreatedEvent, followers []uuid.UUID) {                  
+      124  
+      125    item := domain.TweetItem{
+      126      ID:        evt.TweetID,
+
+⏺ Ahora necesito agregar el import de uuid y ajustar el test para pasar
+  followers a fanoutTweet:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 1 line
+       6    "log"
+       7    "time"
+       8  
+       9 +  "github.com/google/uuid"                                     
+      10    amqp "github.com/rabbitmq/amqp091-go"
+      11    "golang.org/x/sync/errgroup"
+      12    "uala/internal/domain"
+
+⏺ Ahora actualizo el test para usar la nueva firma de fanoutTweet:
+
+⏺ Update(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Added 1 line, removed 1 line
+      66      CreatedAt: time.Now(),
+      67    }
+      68  
+      69 -  c.fanoutTweet(context.Background(), evt)                     
+      69 +  c.fanoutTweet(context.Background(), evt, followers)          
+      70  
+      71    if fanout.maxObserved <= 1 {
+      72      t.Errorf("expected concurrent fanout (max observed > 1), go
+          t %d", fanout.maxObserved)
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -v 2>&1)
+  ⎿  === RUN   TestHandleTweetCreated_FanoutIsConcurrent
+     --- PASS: TestHandleTweetCreated_FanoutIsConcurrent (0.01s)
+     PASS
+     ok         uala/internal/messaging/rabbitmq        0.661s
+
+⏺ Test pasa. Verifico que todo el proyecto siga compilando:
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Todo verde. El estado final del consumer:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Hay una línea en blanco extra en línea 125, la limpio:
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Removed 1 line
+      122  }
+      123  
+      124  func (c *Consumer) fanoutTweet(ctx context.Context, evt domain
+           .TweetCreatedEvent, followers []uuid.UUID) {
+      125 -                                                              
+      125    item := domain.TweetItem{
+      126      ID:        evt.TweetID,
+      127      UserID:    evt.UserID,
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/handler_test [uala/internal/handler.test]
+     internal/handler/setup_test.go:79:60: not enough arguments in call to 
+     redisrepo.NewTimelineRepository
+        have (*"github.com/redis/go-redis/v9".Client, 
+     *postgres.TimelineRepository)
+        want (*"github.com/redis/go-redis/v9".Client, 
+     domain.TimelineRepository, int)
+     ?          uala/cmd/api    [no test files]
+     ?          uala/internal/domain    [no test files]
+     FAIL       uala/internal/handler [build failed]
+     ?          uala/internal/infra     [no test files]
+     ok         uala/internal/messaging/rabbitmq        0.796s
+     … +5 lines (ctrl+o to expand)
+
+⏺ Nuestro test pasa. El fallo pre-existente en handler es el Gap #2 del
+  documento (bug de aridad en tests de integración), no tiene relación con
+  nuestro cambio.
+
+  ---
+  Resumen del cambio:
+
+  - fanoutTweet reemplaza el loop secuencial con errgroup + semáforo de 100
+  workers (fanoutConcurrency = 100)
+  - Los fallos individuales de AppendTweet se loggean pero no cancelan el fanout
+   ni hacen Nack (consistencia eventual)
+  - fanoutWorkers es configurable en el struct para permitir tests con control
+  de concurrencia
+  - El test verifica que con 50 seguidores y 5ms de latencia simulada, se
+  ejecuten múltiples AppendTweet en paralelo
+
+✻ Worked for 1m 47s
+
+❯ soluciona el gap 2                                                            
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ El fix es agregar el tercer argumento limit en setup_test.go. Necesito ver qué
+   valor usa el resto del proyecto:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/handler/setup_test.go)
+  ⎿  Added 1 line, removed 1 line
+      76    tweetRepo := postgres.NewTweetRepository(testDB)
+      77    followRepo := postgres.NewFollowRepository(testDB)
+      78    pgTimeline := postgres.NewTimelineRepository(testDB)
+      79 -  redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgT
+         -imeline)                                                       
+      79 +  redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgT
+         +imeline, 500)                                                  
+      80  
+      81    router := handler.NewRouter(
+      82      handler.NewUserHandler(usecase.NewUserUseCase(userRepo)),
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Compila. Verifico que los tests de integración del handler ahora pasan
+  (requieren infraestructura, puede que fallen por eso, pero no por aridad):
+
+⏺ Bash(go vet ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Fix de una línea: setup_test.go:79 le faltaba el tercer argumento limit int al
+   constructor. Usé 500, el mismo valor por defecto que usan los tests de Redis
+  y que main.go lee de config como cfg.TimelineLimit.
+
+✻ Cooked for 30s
+
+❯ AppendTweet tiene un comportamiento muy dummy, quiero que si un tweet ya      
+  estaba en la lista, no se agregue dos veces                                   
+
+⏺ Skill(superpowers:test-driven-development)  ⎿  Successfully loaded skill
+
+⏺ Voy a leer la implementación actual de AppendTweet.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Veo el problema: el member en el sorted set es el JSON completo del tweet. Si
+  dos eventos intentan agregar el mismo tweet, Redis deduplica por string
+  exacto, pero no por TweetID. Voy a ver los tests existentes para entender el
+  patrón:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ RED — escribo el test que falla.
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 25 lines
+      156    }
+      157  }
+      158  
+      159 +func TestRedisTimeline_AppendTweet_Idempotent(t *testing.T) { 
+      160 +  flushRedis(t)                                               
+      161 +  userID := uuid.New()                                        
+      162 +  repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTime
+          +line{}, 500)                                                  
+      163 +                                                              
+      164 +  item := domain.TweetItem{                                   
+      165 +    ID:        uuid.New(),                                    
+      166 +    UserID:    uuid.New(),                                    
+      167 +    Username:  "alice",                                       
+      168 +    Content:   "duplicate tweet",                             
+      169 +    CreatedAt: time.Now().UTC().Truncate(time.Second),        
+      170 +  }                                                           
+      171 +                                                              
+      172 +  _ = repo.AppendTweet(context.Background(), userID, item)    
+      173 +  _ = repo.AppendTweet(context.Background(), userID, item)    
+      174 +                                                              
+      175 +  items, err := repo.GetTimeline(context.Background(), userID)
+      176 +  if err != nil {                                             
+      177 +    t.Fatalf("GetTimeline: %v", err)                          
+      178 +  }                                                           
+      179 +  if len(items) != 1 {                                        
+      180 +    t.Fatalf("want 1 item after duplicate AppendTweet, got %d"
+          +, len(items))                                                 
+      181 +  }                                                           
+      182 +}                                                             
+      183 +                                                              
+      184  type countingPgTimeline struct {
+      185    items    []domain.TweetItem
+      186    countPtr *int
+
+⏺ Bash(go test ./internal/repository/redis/... -run
+      TestRedisTimeline_AppendTweet_Idempotent -v 2>&1)
+  ⎿  ok         uala/internal/repository/redis  0.512s
+
+⏺ El test pasó de inmediato — red flag. Eso significa que el caso exacto (mismo
+  struct) ya se deduplica por JSON idéntico. El problema real que el usuario
+  describe es deduplicación por tweet ID, no por JSON byte-a-byte. Necesito un
+  test que demuestre el fallo real:
+
+⏺ Update(internal/repository/redis/timeline_test.go)
+  ⎿  Added 11 lines, removed 7 lines
+      156    }
+      157  }
+      158  
+      159 -func TestRedisTimeline_AppendTweet_Idempotent(t *testing.T) { 
+      159 +func TestRedisTimeline_AppendTweet_DeduplicatesByTweetID(t *te
+          +sting.T) {                                                    
+      160    flushRedis(t)
+      161    userID := uuid.New()
+      162    repo := redisrepo.NewTimelineRepository(testRDB, &mockPgTime
+           line{}, 500)
+      163  
+      164 -  item := domain.TweetItem{                                   
+      165 -    ID:        uuid.New(),                                    
+      164 +  tweetID := uuid.New()                                       
+      165 +  base := domain.TweetItem{                                   
+      166 +    ID:        tweetID,                                       
+      167      UserID:    uuid.New(),
+      168      Username:  "alice",
+      168 -    Content:   "duplicate tweet",                             
+      169 +    Content:   "original",                                    
+      170      CreatedAt: time.Now().UTC().Truncate(time.Second),
+      171    }
+      172 +  // Same tweet ID, different content — simulates redelivered 
+          +message with any byte difference.                             
+      173 +  redelivered := base                                         
+      174 +  redelivered.Content = "redelivered"                         
+      175  
+      172 -  _ = repo.AppendTweet(context.Background(), userID, item)    
+      173 -  _ = repo.AppendTweet(context.Background(), userID, item)    
+      176 +  _ = repo.AppendTweet(context.Background(), userID, base)    
+      177 +  _ = repo.AppendTweet(context.Background(), userID, redeliver
+          +ed)                                                           
+      178  
+      179    items, err := repo.GetTimeline(context.Background(), userID)
+      180    if err != nil {
+      181      t.Fatalf("GetTimeline: %v", err)
+      182    }
+      183    if len(items) != 1 {
+      180 -    t.Fatalf("want 1 item after duplicate AppendTweet, got %d"
+          -, len(items))                                                 
+      184 +    t.Fatalf("want 1 item for same tweet ID, got %d", len(item
+          +s))                                                           
+      185    }
+      186  }
+      187  
+
+⏺ Bash(go test ./internal/repository/redis/... -run
+      TestRedisTimeline_AppendTweet_DeduplicatesByTweetID -v 2>&1)
+  ⎿  ok         uala/internal/repository/redis  0.532s
+
+⏺ Algo está pasando — el test debería fallar pero pasa. Voy a inspeccionar qué
+  realmente devuelve Redis:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Bash(find /Users/gonza/Katas/uala/internal/repository/redis -name "*.go" |
+      grep -v "_test" | xargs grep -l "setup\|TestMain\|testRDB" 2>/dev/null)
+  ⎿  Error: Exit code 1
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Los tests se saltean sin INTEGRATION=1. Voy a correrlos correctamente:
+
+⏺ Bash(INTEGRATION=1 go test ./internal/repository/redis/... -run
+      TestRedisTimeline_AppendTweet_DeduplicatesByTweetID -v 2>&1)
+  ⎿  Error: Exit code 1
+     === RUN   TestRedisTimeline_AppendTweet_DeduplicatesByTweetID
+         timeline_test.go:184: want 1 item for same tweet ID, got 2
+     --- FAIL: TestRedisTimeline_AppendTweet_DeduplicatesByTweetID (0.01s)
+     FAIL
+     FAIL       uala/internal/repository/redis  0.421s
+     FAIL
+
+⏺ Falla correctamente: got 2. GREEN — implemento el fix.
+
+  La solución: usar el tweet ID como member del sorted set (clave de
+  deduplicación), y el JSON completo en un hash separado por usuario.
+
+⏺ Update(internal/repository/redis/timeline.go)
+  ⎿  Added 4 lines
+      25    return fmt.Sprintf("timeline:%s", userID)
+      26  }
+      27  
+      28 +func timelineDataKey(userID uuid.UUID) string {                
+      29 +  return fmt.Sprintf("timeline:data:%s", userID)               
+      30 +}                                                              
+      31 +                                                               
+      32  func (r *TimelineRepository) GetTimeline(ctx context.Context, u
+          serID uuid.UUID) ([]domain.TweetItem, error) {
+      33    key := timelineKey(userID)
+      34  
+
+⏺ Update(internal/repository/redis/timeline.go)
+  ⎿  Added 42 lines, removed 12 lines
+      53    return items, nil
+      54  }
+      55  
+      56 -func (r *TimelineRepository) readFromRedis(ctx context.Context,
+         - key string) ([]domain.TweetItem, error) {                     
+      57 -  vals, err := r.rdb.ZRevRange(ctx, key, 0, r.limit-1).Result()
+      56 +func (r *TimelineRepository) readFromRedis(ctx context.Context,
+         + userID uuid.UUID) ([]domain.TweetItem, error) {               
+      57 +  key := timelineKey(userID)                                   
+      58 +  dataKey := timelineDataKey(userID)                           
+      59 +                                                               
+      60 +  ids, err := r.rdb.ZRevRange(ctx, key, 0, r.limit-1).Result() 
+      61    if err != nil {
+      62      return nil, err
+      63    }
+      64 +  if len(ids) == 0 {                                           
+      65 +    return []domain.TweetItem{}, nil                           
+      66 +  }                                                            
+      67 +                                                               
+      68 +  vals, err := r.rdb.HMGet(ctx, dataKey, ids...).Result()      
+      69 +  if err != nil {                                              
+      70 +    return nil, err                                            
+      71 +  }                                                            
+      72 +                                                               
+      73    items := make([]domain.TweetItem, 0, len(vals))
+      74    for _, v := range vals {
+      75 +    if v == nil {                                              
+      76 +      continue                                                 
+      77 +    }                                                          
+      78      var item domain.TweetItem
+      64 -    if err := json.Unmarshal([]byte(v), &item); err != nil {   
+      79 +    if err := json.Unmarshal([]byte(v.(string)), &item); err !=
+         + nil {                                                         
+      80        return nil, fmt.Errorf("unmarshal tweet item: %w", err)
+      81      }
+      82      items = append(items, item)
+     ...
+       84    return items, nil
+       85  }
+       86  
+       72 -func (r *TimelineRepository) writeToRedis(ctx context.Context,
+          - key string, items []domain.TweetItem) error {                
+       87 +func (r *TimelineRepository) writeToRedis(ctx context.Context,
+          + userID uuid.UUID, items []domain.TweetItem) error {          
+       88 +  key := timelineKey(userID)                                  
+       89 +  dataKey := timelineDataKey(userID)                          
+       90 +                                                              
+       91    members := make([]redis.Z, len(items))
+       92 +  dataFields := make([]interface{}, 0, len(items)*2)          
+       93 +                                                              
+       94    for i, item := range items {
+       95      data, err := json.Marshal(item)
+       96      if err != nil {
+       97        return err
+       98      }
+       79 -    members[i] = redis.Z{                                     
+       80 -      Score:  float64(item.CreatedAt.Unix()),                 
+       81 -      Member: string(data),                                   
+       82 -    }                                                         
+       99 +    id := item.ID.String()                                    
+      100 +    members[i] = redis.Z{Score: float64(item.CreatedAt.Unix())
+          +, Member: id}                                                 
+      101 +    dataFields = append(dataFields, id, string(data))         
+      102    }
+       84 -  return r.rdb.ZAdd(ctx, key, members...).Err()               
+      103 +                                                              
+      104 +  if err := r.rdb.ZAdd(ctx, key, members...).Err(); err != nil
+          + {                                                            
+      105 +    return err                                                
+      106 +  }                                                           
+      107 +  return r.rdb.HSet(ctx, dataKey, dataFields...).Err()        
+      108  }
+      109  
+      110  func (r *TimelineRepository) AppendTweet(ctx context.Context, 
+           userID uuid.UUID, item domain.TweetItem) error {
+      111    key := timelineKey(userID)
+      112 +  dataKey := timelineDataKey(userID)                          
+      113 +                                                              
+      114    data, err := json.Marshal(item)
+      115    if err != nil {
+      116      return err
+      117    }
+       93 -  return r.rdb.ZAdd(ctx, key, redis.Z{                        
+      118 +  id := item.ID.String()                                      
+      119 +                                                              
+      120 +  if err := r.rdb.ZAdd(ctx, key, redis.Z{                     
+      121      Score:  float64(item.CreatedAt.Unix()),
+       95 -    Member: string(data),                                     
+       96 -  }).Err()                                                    
+      122 +    Member: id,                                               
+      123 +  }).Err(); err != nil {                                      
+      124 +    return err                                                
+      125 +  }                                                           
+      126 +  return r.rdb.HSetNX(ctx, dataKey, id, string(data)).Err()   
+      127  }
+
+⏺ Ahora actualizo las llamadas a readFromRedis y writeToRedis en GetTimeline que
+   cambiaron de firma:
+
+⏺ Update(internal/repository/redis/timeline.go)
+  ⎿  Added 2 lines, removed 2 lines
+      39  
+      40    if exists > 0 {
+      41      metrics.TimelineCacheHitsTotal.Inc()
+      42 -    return r.readFromRedis(ctx, key)                           
+      42 +    return r.readFromRedis(ctx, userID)                        
+      43    }
+      44  
+      45    metrics.TimelineCacheMissesTotal.Inc()
+     ...
+      48      return nil, err
+      49    }
+      50    if len(items) > 0 {
+      51 -    _ = r.writeToRedis(ctx, key, items)                        
+      51 +    _ = r.writeToRedis(ctx, userID, items)                     
+      52    }
+      53    return items, nil
+      54  }
+
+⏺ También necesito remover el key que ya no se usa en GetTimeline:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ key aún se usa en Exists, está bien. Verifico que compile:
+
+⏺ Bash(go build ./... 2>&1)  ⎿  (No output)
+
+⏺ Verify GREEN:
+
+⏺ Bash(INTEGRATION=1 go test ./internal/repository/redis/... -v 2>&1)
+  ⎿  === RUN   TestRedisTimeline_AppendAndGet
+     --- PASS: TestRedisTimeline_AppendAndGet (0.01s)
+     === RUN   TestRedisTimeline_MultipleItems_OrderedByScoreDesc
+     … +11 lines (ctrl+o to expand)
+
+⏺ Todos verdes. El estado final de timeline.go:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Qué cambió y por qué:
+
+  ┌────────────────────────────┬────────────────────────────────────────────┐
+  │           Antes            │                  Después                   │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Sorted set member = JSON   │ Sorted set member = tweet ID (string)      │
+  │ completo                   │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Deduplicación por igualdad │ Deduplicación garantizada por tweet ID     │
+  │  de bytes JSON             │                                            │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Una sola key por usuario   │ Dos keys: timeline:{uid} (sorted set) +    │
+  │                            │ timeline:data:{uid} (hash)                 │
+  └────────────────────────────┴────────────────────────────────────────────┘
+
+  - ZAdd en el sorted set deduplica naturalmente porque el member (tweet ID) es
+  único
+  - HSetNX en el hash solo escribe si la clave no existe (el primer valor gana,
+  igual que ZAdd)
+  - HMGet recupera todos los JSONs en un solo roundtrip, mantiene O(1) por tweet
+
+✻ Worked for 2m 56s
+
+❯ /context                                                                      
+  ⎿  Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛁ ⛁ ⛁   Sonnet 4.6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-sonnet-4-6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   59.8k/200k tokens (30%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 6.4k tokens (3.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 7k tokens (3.5%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 247 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Skills: 2k tokens (1.0%)
+     ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Messages: 44.7k tokens (22.4%)
+                           ⛶ Free space: 106.7k (53.4%)
+                           ⛝ Autocompact buffer: 33k tokens (16.5%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__create_draft
+     ├ mcp__claude_ai_Gmail__create_label
+     ├ mcp__claude_ai_Gmail__get_thread
+     ├ mcp__claude_ai_Gmail__label_message
+     ├ mcp__claude_ai_Gmail__label_thread
+     ├ mcp__claude_ai_Gmail__list_drafts
+     ├ mcp__claude_ai_Gmail__list_labels
+     ├ mcp__claude_ai_Gmail__search_threads
+     ├ mcp__claude_ai_Gmail__unlabel_message
+     ├ mcp__claude_ai_Gmail__unlabel_thread
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     └ mcp__claude_ai_Google_Drive__complete_authentication
+
+     Custom agents · /agents
+
+     Plugin
+     └ superpowers:code-reviewer: 247 tokens
+
+     Skills · /skills
+
+     User
+     ├ golang: 49 tokens
+     ├ golang:architecture: 14 tokens
+     ├ golang:dependency-injection: 12 tokens
+     ├ golang:repository-layer: 10 tokens
+     ├ golang:handler-layer: 10 tokens
+     ├ golang:modules-tooling: 10 tokens
+     ├ golang:logging: 10 tokens
+     ├ golang:usecase-layer: 9 tokens
+     ├ golang:project-layout: 9 tokens
+     ├ golang:error-handling: 9 tokens
+     ├ golang:domain-layer: 8 tokens
+     ├ golang:performance: 8 tokens
+     ├ golang:concurrency: 8 tokens
+     ├ golang:interfaces: 7 tokens
+     ├ golang:context: 6 tokens
+     ├ golang:testing: 6 tokens
+     ├ golang:security: 6 tokens
+     └ golang:naming: 5 tokens
+
+     Plugin
+     ├ backend-best-practices: 204 tokens
+     ├ receiving-code-review: 67 tokens
+     ├ verification-before-completion: 67 tokens
+     ├ finishing-a-development-branch: 61 tokens
+     ├ using-git-worktrees: 59 tokens
+     ├ brainstorming: 56 tokens
+     ├ using-superpowers: 47 tokens
+     ├ dispatching-parallel-agents: 37 tokens
+     ├ requesting-code-review: 36 tokens
+     ├ executing-plans: 33 tokens
+     ├ writing-skills: 31 tokens
+     ├ systematic-debugging: 31 tokens
+     ├ subagent-driven-development: 31 tokens
+     ├ test-driven-development: 29 tokens
+     ├ writing-plans: 28 tokens
+     ├ superpowers:execute-plan: 22 tokens
+     ├ superpowers:write-plan: 21 tokens
+     └ superpowers:brainstorm: 21 tokens
+
+❯ creo que puede haber un problema con como se hace el fanout, si no se le      
+  puede appendear el tweet a ningun usuario, el mensaje no se reintenta         
+
+⏺ Exacto. En fanoutTweet todos los errores de AppendTweet se loggean y se
+  descarta el error (return nil), así que g.Wait() siempre retorna nil y el
+  handler hace Ack sin importar nada.
+
+⏺ Skill(superpowers:test-driven-development)
+  ⎿  Successfully loaded skill
+
+⏺ Antes de escribir el test necesito ver el estado actual del consumer para
+  entender el flujo completo.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Veo el problema claramente. fanoutTweet es void — nunca retorna error, y
+  handleTweetCreated siempre hace Ack. RED — dos tests.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Added 1 line
+      2  
+      3  import (
+      4    "context"
+      5 +  "errors"                                                      
+      6    "sync"
+      7    "sync/atomic"
+      8    "testing"
+
+⏺ Update(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Added 45 lines
+       73      t.Errorf("expected concurrent fanout (max observed > 1), g
+           ot %d", fanout.maxObserved)
+       74    }
+       75  }
+       76 +                                                              
+       77 +// errorFanout always returns an error for AppendTweet.       
+       78 +type errorFanout struct{}                                     
+       79 +                                                              
+       80 +func (e *errorFanout) AppendTweet(_ context.Context, _ uuid.UU
+          +ID, _ domain.TweetItem) error {                               
+       81 +  return errors.New("redis unavailable")                      
+       82 +}                                                             
+       83 +                                                              
+       84 +// partialErrorFanout fails for the first N calls, succeeds fo
+          +r the rest.                                                   
+       85 +type partialErrorFanout struct {                              
+       86 +  failCount int                                               
+       87 +  calls     atomic.Int64                                      
+       88 +}                                                             
+       89 +                                                              
+       90 +func (p *partialErrorFanout) AppendTweet(_ context.Context, _ 
+          +uuid.UUID, _ domain.TweetItem) error {                        
+       91 +  if int(p.calls.Add(1)) <= p.failCount {                     
+       92 +    return errors.New("redis unavailable")                    
+       93 +  }                                                           
+       94 +  return nil                                                  
+       95 +}                                                             
+       96 +                                                              
+       97 +func TestFanoutTweet_AllFail_ReturnsError(t *testing.T) {     
+       98 +  followers := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+       99 +  c := &Consumer{fanout: &errorFanout{}, fanoutWorkers: fanout
+          +Concurrency}                                                  
+      100 +                                                              
+      101 +  evt := domain.TweetCreatedEvent{TweetID: uuid.New(), UserID:
+          + uuid.New(), CreatedAt: time.Now()}                           
+      102 +  err := c.fanoutTweet(context.Background(), evt, followers)  
+      103 +                                                              
+      104 +  if err == nil {                                             
+      105 +    t.Error("expected error when all AppendTweet calls fail, g
+          +ot nil")                                                      
+      106 +  }                                                           
+      107 +}                                                             
+      108 +                                                              
+      109 +func TestFanoutTweet_PartialFail_ReturnsNil(t *testing.T) {   
+      110 +  followers := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+      111 +  // first 2 fail, last 1 succeeds                            
+      112 +  c := &Consumer{fanout: &partialErrorFanout{failCount: 2}, fa
+          +noutWorkers: fanoutConcurrency}                               
+      113 +                                                              
+      114 +  evt := domain.TweetCreatedEvent{TweetID: uuid.New(), UserID:
+          + uuid.New(), CreatedAt: time.Now()}                           
+      115 +  err := c.fanoutTweet(context.Background(), evt, followers)  
+      116 +                                                              
+      117 +  if err != nil {                                             
+      118 +    t.Errorf("expected nil when at least one AppendTweet succe
+          +eds, got %v", err)                                            
+      119 +  }                                                           
+      120 +}                                                             
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -run "TestFanoutTweet" -v 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/consumer_test.go:102:9: 
+     c.fanoutTweet(context.Background(), evt, followers) (no value) used as 
+     value
+     internal/messaging/rabbitmq/consumer_test.go:115:9: 
+     c.fanoutTweet(context.Background(), evt, followers) (no value) used as 
+     value
+     FAIL       uala/internal/messaging/rabbitmq [build failed]
+     FAIL
+
+⏺ Falla correctamente: fanoutTweet no retorna nada. GREEN — mínimo código.
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 19 lines, removed 4 lines
+      114      return
+      115    }
+      116  
+      117 -  c.fanoutTweet(ctx, evt, followers)                          
+      117 +  if err := c.fanoutTweet(ctx, evt, followers); err != nil {  
+      118 +    log.Printf("rabbitmq: all fanout writes failed for tweet %
+          +s: %v", evt.TweetID, err)                                     
+      119 +    metrics.RabbitMQMessagesFailed.WithLabelValues(QueueTweetC
+          +reated).Inc()                                                 
+      120 +    _ = d.Nack(false, true)                                   
+      121 +    return                                                    
+      122 +  }                                                           
+      123  
+      124    metrics.FanoutDuration.Observe(time.Since(start).Seconds())
+      125    metrics.RabbitMQMessagesProcessed.WithLabelValues(QueueTweet
+           Created).Inc()
+      126    _ = d.Ack(false)
+      127  }
+      128  
+      124 -func (c *Consumer) fanoutTweet(ctx context.Context, evt domain
+          -.TweetCreatedEvent, followers []uuid.UUID) {                  
+      129 +func (c *Consumer) fanoutTweet(ctx context.Context, evt domain
+          +.TweetCreatedEvent, followers []uuid.UUID) error {            
+      130    item := domain.TweetItem{
+      131      ID:        evt.TweetID,
+      132      UserID:    evt.UserID,
+     ...
+      135      CreatedAt: evt.CreatedAt,
+      136    }
+      137  
+      133 -  sem := make(chan struct{}, c.fanoutWorkers)                 
+      134 -  g, gctx := errgroup.WithContext(ctx)                        
+      138 +  var (                                                       
+      139 +    sem       = make(chan struct{}, c.fanoutWorkers)          
+      140 +    g, gctx   = errgroup.WithContext(ctx)                     
+      141 +    succeeded atomic.Int64                                    
+      142 +  )                                                           
+      143  
+      144    for _, followerID := range followers {
+      145      fid := followerID
+     ...
+      148        defer func() { <-sem }()
+      149        if err := c.fanout.AppendTweet(gctx, fid, item); err != 
+           nil {
+      150          log.Printf("rabbitmq: fanout tweet to %s: %v", fid, er
+           r)
+      151 +        return nil                                            
+      152        }
+      153 +      succeeded.Add(1)                                        
+      154        return nil
+      155      })
+      156    }
+      157  
+      158    _ = g.Wait()
+      159 +                                                              
+      160 +  if len(followers) > 0 && succeeded.Load() == 0 {            
+      161 +    return errors.New("all fanout writes failed")             
+      162 +  }                                                           
+      163 +  return nil                                                  
+      164  }
+      165  
+      166  func (c *Consumer) handleFollowCreated(ctx context.Context, d 
+           amqp.Delivery) {
+
+⏺ Bash(go build ./... 2>&1 && go test ./internal/messaging/rabbitmq/... -run
+      "TestFanoutTweet" -v 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq
+     internal/messaging/rabbitmq/consumer.go:141:13: undefined: atomic
+     internal/messaging/rabbitmq/consumer.go:161:10: undefined: errors
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 2 lines
+       3  import (
+       4    "context"
+       5    "encoding/json"
+       6 +  "errors"                                                     
+       7    "log"
+       8 +  "sync/atomic"                                                
+       9    "time"
+      10  
+      11    "github.com/google/uuid"
+
+⏺ Bash(go build ./... 2>&1 && go test ./internal/messaging/rabbitmq/... -run
+      "TestFanoutTweet" -v 2>&1)
+  ⎿  === RUN   TestFanoutTweet_AllFail_ReturnsError
+     2026/05/01 12:53:43 rabbitmq: fanout tweet to 2275ae84-a9e1-4c8e-8405-
+     8ba4f4d7a134: redis unavailable
+     … +13 lines (ctrl+o to expand)
+
+⏺ Ambos pasan. Suite completa:
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -v 2>&1)
+  ⎿  === RUN   TestHandleTweetCreated_FanoutIsConcurrent
+     --- PASS: TestHandleTweetCreated_FanoutIsConcurrent (0.01s)
+     === RUN   TestFanoutTweet_AllFail_ReturnsError
+     … +15 lines (ctrl+o to expand)
+⏺ Todo verde. El comportamiento implementado:
+
+  ┌────────────────────────────┬────────────────────────────────────────────┐
+  │         Escenario          │                 Resultado                  │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Todos los AppendTweet      │ fanoutTweet retorna error →                │
+  │ fallan                     │ Nack(requeue=true)                         │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Al menos uno tiene éxito   │ fanoutTweet retorna nil → Ack              │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ followers vacío            │ fanoutTweet retorna nil → Ack (nada que    │
+  │                            │ hacer)                                     │
+  └────────────────────────────┴────────────────────────────────────────────┘
+
+  La lógica: fallo total indica un problema sistémico (Redis caído), y vale la
+  pena reintentar el mensaje. Fallo parcial es consistencia eventual aceptable —
+   gracias a la deduplicación por TweetID que agregamos antes, el reintento de
+  los exitosos no generará duplicados.
+
+✻ Sautéed for 1m 36s
+
+❯ como garantiza el servicio que Fallo parcial es consistencia eventual?        
+
+⏺ No lo garantiza. Eso fue impreciso de mi parte.
+
+  El único mecanismo de fallback existe en GetTimeline:
+
+  // si la key NO existe en Redis → cae a Postgres
+  if exists > 0 {
+      return r.readFromRedis(ctx, userID)  // ← solo lee cache
+  }
+  return r.pgRepo.GetTimeline(ctx, userID) // ← fallback
+
+  Si AppendTweet falla para el follower X, la key timeline:X puede existir con
+  tweets anteriores. En ese caso exists > 0 y Redis sirve el cache incompleto —
+  el tweet perdido nunca aparece. No hay TTL en las keys, así que el cache vive
+  indefinidamente.
+
+  Consistencia eventual real requeriría al menos uno de estos:
+
+  1. TTL en las keys de Redis — el cache expira, el siguiente read cae a
+  Postgres que tiene el tweet. Simple, pero aumenta la carga en Postgres.
+  2. DLQ por follower fallido — encolar {followerID, tweetItem} en una dead
+  letter queue para reintentar solo los writes que fallaron. Más complejo, no
+  reprocesa todo el fanout.
+  3. Modelo híbrido en lectura — GetTimeline siempre mergea Redis + los últimos
+  N tweets de Postgres para el usuario. Costoso pero robusto.
+
+  La opción 1 es la más simple y directamente relacionada con el Gap #3 del
+  documento (sin DLQ). ¿Querés implementar el TTL en las keys como solución
+  mínima, o preferís algo más robusto?
+
+❯ implementa la 2 DLQ por follower fallido                                      
+
+⏺ Skill(superpowers:brainstorming)
+  ⎿  Successfully loaded skill
+
+⏺ Voy a explorar el contexto del proyecto antes de hacer preguntas.
+
+  Searched for 1 pattern, read 3 files (ctrl+o to expand)
+
+⏺ Tengo el contexto completo. Antes de proponer el diseño, necesito entender un
+  detalle clave:
+
+  Cuando un retry falla repetidamente (Redis sigue caído), ¿qué preferís que
+  pase cuando se agota el límite de reintentos?
+
+  - A) Log como pérdida permanente y descartar — el tweet no llega a ese
+  follower específico, pero el sistema sigue adelante
+  - B) Mover a una "final DLQ" separada (fanout.dead) para inspección y replay
+  manual
+  - C) Alertar via métricas y descartar — igual que A pero con visibilidad en
+  Prometheus
+
+✻ Worked for 1m 32s
+
+❯ b pero con una metrica, si un usuario tiene un problema que no se le pueden   
+  appendear mas tweets, quiero enterarme, el limite de fallos para un usuario   
+  son 10                                                                        
+
+⏺ Tengo todo lo que necesito. Antes de diseñar, te presento tres enfoques:
+
+  ---
+  Opción A — Retry application-level con contador en el mensaje (mi 
+  recomendación)
+
+  El evento FanoutRetryEvent lleva un campo RetryCount int. El consumer
+  incrementa el contador y republica a fanout.retry si está por debajo del
+  límite. Al llegar a 10, publica en fanout.dead e incrementa la métrica. Sin
+  config especial en RabbitMQ, fácil de testear.
+
+  Trade-off: No tiene backoff nativo — los reintentos son inmediatos. Si Redis
+  está caído, los 10 intentos se consumen rápido.
+
+  ---
+  Opción B — RabbitMQ DLX nativo con TTL
+
+  Configura fanout.retry con x-dead-letter-exchange y TTL para backoff
+  exponencial. RabbitMQ gestiona el routing automáticamente. Más correcto a
+  nivel de broker.
+
+  Trade-off: Requiere config declarativa de exchanges y bindings al arrancar,
+  más difícil de testear sin un broker real, y el código de retry queda
+  distribuido entre config de infra y código.
+
+  ---
+  Opción C — Contador por follower en Redis
+
+  Trackea retry:{followerID}:{tweetID} en Redis con TTL. Si el contador supera
+  10, publica a fanout.dead.
+
+  Trade-off: Agrega estado en Redis para una operación de retry, y si Redis está
+   caído (que es exactamente el escenario que activa el retry), no podés leer el
+   contador.
+
+  ---
+  Opción A es la más correcta dado el contexto: simple, testeable sin infra
+  real, y el escenario de Redis caído no afecta la lógica del contador porque el
+   estado viaja en el mensaje. ¿Estás de acuerdo?
+
+❯ no, opcion b, anota esto en trade-off                                         
+
+⏺ Anotado. Voy a presentar el diseño por secciones.
+
+  ---
+  Sección 1: Topología de colas
+
+  fanout.retry ──[Nack, no requeue]──▶ fanout.wait (TTL 30s) ──[expire]──▶
+  fanout.retry
+                                                                             │
+                                                                x-death ≥ 10 │
+                                                                             ▼
+
+  fanout.dead
+
+  Colas y exchanges:
+
+  ┌───────────────────────┬───────────┬─────────────────────────────────────┐
+  │        Recurso        │   Tipo    │            Config clave             │
+  ├───────────────────────┼───────────┼─────────────────────────────────────┤
+  │ fanout.retry.exchange │ direct    │ —                                   │
+  │                       │ exchange  │                                     │
+  ├───────────────────────┼───────────┼─────────────────────────────────────┤
+  │ fanout.retry queue    │ durable   │ x-dead-letter-exchange:             │
+  │                       │           │ fanout.wait.exchange                │
+  ├───────────────────────┼───────────┼─────────────────────────────────────┤
+  │ fanout.wait.exchange  │ direct    │ —                                   │
+  │                       │ exchange  │                                     │
+  ├───────────────────────┼───────────┼─────────────────────────────────────┤
+  │                       │           │ x-message-ttl: 30000,               │
+  │ fanout.wait queue     │ durable   │ x-dead-letter-exchange:             │
+  │                       │           │ fanout.retry.exchange               │
+  ├───────────────────────┼───────────┼─────────────────────────────────────┤
+  │ fanout.dead queue     │ durable   │ — (replay manual)                   │
+  └───────────────────────┴───────────┴─────────────────────────────────────┘
+
+  Flujo:
+  1. AppendTweet falla → consumer publica en fanout.retry
+  2. ConsumeFanoutRetry intenta AppendTweet
+  3. Si falla → Nack(requeue=false) → RabbitMQ DLX lo manda a fanout.wait → TTL
+  30s → vuelve a fanout.retry
+  4. El header x-death[fanout.retry].count es el contador nativo de RabbitMQ
+  5. Cuando count >= 10 → consumer publica manualmente a fanout.dead, incrementa
+   métrica, Ack
+
+  Trade-offs anotados:
+  - Config declarativa de exchanges/bindings/TTL en el arranque del servidor
+  - Más difícil de testear sin broker real (setup complejo en integration tests)
+  - Lógica distribuida: el backoff lo gestiona RabbitMQ, el límite de 10 lo
+  gestiona el código
+
+  ¿Esta topología tiene sentido? ¿Querés ajustar el TTL de 30s o el límite de
+  10?
+
+✻ Cooked for 1m 8s
+
+❯ fanout.retry es por usuario no?                                               
+
+⏺ No, es una sola cola compartida. La granularidad por follower está en el
+  contenido del mensaje, no en el nombre de la cola.
+
+  Cada mensaje en fanout.retry representa un write fallido para un follower
+  específico:
+
+  {
+    "follower_id": "uuid-de-X",
+    "tweet": { "id": "...", "content": "...", ... }
+  }
+
+  Si un tweet tiene 1000 followers y falla para 50 de ellos, se publican 50
+  mensajes independientes en la misma cola fanout.retry. Cada uno tiene su
+  propio x-death counter, así que el límite de 10 reintentos aplica por follower
+   por tweet.
+
+  Crear una cola por follower sería impracticable — potencialmente millones de
+  colas dinámicas en RabbitMQ.
+
+  ¿Esto está claro? ¿Seguimos con la sección 2?
+
+❯ si                                                                            
+
+⏺ Sección 2: Modelo de datos y componentes
+
+  Nuevo evento en domain/events.go:
+
+  type FanoutRetryEvent struct {
+      FollowerID uuid.UUID  `json:"follower_id"`
+      Tweet      TweetItem  `json:"tweet"`
+  }
+
+  Sin RetryCount — el contador lo lleva RabbitMQ en x-death, no el payload.
+
+  Nueva interfaz en domain/events.go:
+
+  type FanoutRetryPublisher interface {
+      PublishFanoutRetry(ctx context.Context, evt FanoutRetryEvent) error
+  }
+
+  ---
+  Componentes a tocar:
+
+  ┌───────────────────────┬──────────────────────────────────────────────────┐
+  │        Archivo        │                      Cambio                      │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │ domain/events.go      │ +FanoutRetryEvent, +FanoutRetryPublisher         │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │ rabbitmq/client.go    │ +constantes de colas/exchanges, +declaración en  │
+  │                       │ Connect                                          │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │ rabbitmq/publisher.go │ +PublishFanoutRetry                              │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │                       │ +campo retryPublisher, fanoutTweet publica en    │
+  │ rabbitmq/consumer.go  │ retry en vez de solo loggear,                    │
+  │                       │ +ConsumeFanoutRetry                              │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │ metrics/metrics.go    │ +FanoutDeadLetterTotal counter con label         │
+  │                       │ follower_id                                      │
+  ├───────────────────────┼──────────────────────────────────────────────────┤
+  │ cmd/api/main.go       │ +go consumer.ConsumeFanoutRetry(ctx)             │
+  └───────────────────────┴──────────────────────────────────────────────────┘
+
+  ---
+  Lógica de ConsumeFanoutRetry:
+
+  recibir mensaje
+    ├── leer x-death count para QueueFanoutRetry
+    ├── si count >= 10
+    │     publicar a fanout.dead
+    │     incrementar métrica FanoutDeadLetterTotal
+    │     Ack
+    └── intentar AppendTweet
+          ├── éxito → Ack
+          └── fallo → Nack(requeue=false) → RabbitMQ hace el resto
+
+  ¿Esta sección está bien, o querés cambiar algo antes de seguir?
+
+❯ continua                                                                      
+
+⏺ Voy a escribir el spec y luego invocar writing-plans.
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Write(docs/superpowers/specs/2026-05-01-fanout-dlq-design.md)
+  ⎿  Wrote 110 lines to
+     docs/superpowers/specs/2026-05-01-fanout-dlq-design.md
+       2 # Fanout DLQ por follower fallido
+       3 **Fecha:** 2026-05-01  
+       4 **Estado:** aprobado
+       6 ## Problema
+       7 
+       8 Cuando `AppendTweet` falla para un follower específico durante e
+         reintento: ese follower nunca recibe el tweet aunque Redis se re
+         cupere.
+       9 
+      10 ## Solución
+     … +134 lines (ctrl+o to expand)
+
+⏺ Spec self-review:
+
+  - Sin TBDs ni secciones incompletas ✓
+  - Topología consistente con el flujo consumer ✓
+  - El contador x-death está claramente separado del payload ✓
+  - Scope acotado: solo el retry loop, no toca otras partes del sistema ✓
+  - Trade-offs documentados como pidió el usuario ✓
+
+  ---
+  Spec escrito en docs/superpowers/specs/2026-05-01-fanout-dlq-design.md.
+  Revisalo y decime si querés cambiar algo antes de armar el plan de
+  implementación.
+
+✻ Worked for 35s
+
+❯ todo ok                                                                       
+
+⏺ Skill(superpowers:writing-plans)
+  ⎿  Successfully loaded skill
+⏺ Usando el skill writing-plans para crear el plan de implementación.
+
+  Read 3 files (ctrl+o to expand)
+
+⏺ Write(docs/superpowers/plans/2026-05-01-fanout-dlq.md)
+  ⎿  Wrote 802 lines to docs/superpowers/plans/2026-05-01-fanout-dlq.md
+      2 # Fanout DLQ por follower fallido — Implementation Plan
+      3 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:su
+        plans to implement this plan task-by-task. Steps use checkbox (`-
+         [ ]`) syntax for tracking.
+      5 **Goal:** Cuando `AppendTweet` falla para un follower, encolar un
+         retry event en RabbitMQ; reintentarlo hasta 10 veces con backoff
+        incrementar una métrica.ar los intentos, mover a `fanout.dead` e 
+      6 
+        .wait` (TTL 30s) que rebota de vuelta a `fanout.retry`. El consum
+        er lee el header `x-death` para saber cuántas veces fue re
+     … +893 lines (ctrl+o to expand)
+
+⏺ Plan completo guardado en docs/superpowers/plans/2026-05-01-fanout-dlq.md.
+
+  Dos opciones de ejecución:
+
+  1. Subagent-Driven (recomendado) — Despacho un subagente por task, reviso
+  entre tasks, iteración rápida.
+
+  2. Inline Execution — Ejecuto las tasks en esta sesión con checkpoints de
+  revisión.
+
+  ¿Cuál preferís?
+
+✻ Crunched for 1m 54s
+
+❯ cual consume menos tokens?                                                    
+
+⏺ Inline Execution consume menos tokens.
+
+  Subagent-Driven spawna un agente nuevo por task — cada uno carga el contexto
+  completo del sistema desde cero, multiplica el uso por la cantidad de tasks (7
+   en este caso).
+
+  Inline ejecuta todo en esta sesión donde el contexto ya está caliente. Más
+  eficiente.
+
+  ¿Arrancamos con inline?
+
+❯ si                                                                            
+
+⏺ Skill(superpowers:executing-plans)
+  ⎿  Successfully loaded skill
+
+⏺ Usando el skill executing-plans para implementar este plan.
+
+  Voy a revisar el plan críticamente antes de empezar.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Revisión crítica: El plan tiene un bug en Task 7. Pasa el mismo publisher como
+   WithRetryPublisher y WithDeadLetterPublisher, pero
+  publisher.PublishFanoutRetry siempre rutea a fanout.retry, nunca a
+  fanout.dead. El deadLetterPub necesita un adapter que llame
+  PublishToDeadLetter. Lo corrijo en Task 4.
+
+⏺ Task 1: Dominio
+
+⏺ Update(internal/domain/events.go)
+  ⎿  Added 9 lines
+      31  type UserTweetsRepository interface {
+      32    GetLatestByUser(ctx context.Context, userID uuid.UUID, limit 
+          int) ([]TweetItem, error)
+      33  }
+      34 +                                                               
+      35 +type FanoutRetryEvent struct {                                 
+      36 +  FollowerID uuid.UUID `json:"follower_id"`                    
+      37 +  Tweet      TweetItem `json:"tweet"`                          
+      38 +}                                                              
+      39 +                                                               
+      40 +type FanoutRetryPublisher interface {                          
+      41 +  PublishFanoutRetry(ctx context.Context, evt FanoutRetryEvent)
+         + error                                                         
+      42 +}                                                              
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+⏺ Task 2: Métrica
+
+⏺ Update(internal/metrics/metrics.go)
+  ⎿  Added 5 lines
+      60      Name: "db_errors_total",
+      61      Help: "Postgres errors by type",
+      62    }, []string{"type"})
+      63 +                                                               
+      64 +  FanoutDeadLetterTotal = prometheus.NewCounterVec(prometheus.C
+         +ounterOpts{                                                    
+      65 +    Name: "fanout_dead_letter_total",                          
+      66 +    Help: "Tweets que no pudieron appendearse a un follower tra
+         +s 10 reintentos.",                                             
+      67 +  }, []string{"follower_id"})                                  
+      68  )
+      69  
+      70  func init() {
+
+⏺ Update(internal/metrics/metrics.go)
+  ⎿  Added 1 line
+      80      DBQueryDuration,
+      81      DBConnectionsActive,
+      82      DBErrorsTotal,
+      83 +    FanoutDeadLetterTotal,                                     
+      84    )
+      85  }
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Task 3: RabbitMQ client
+
+⏺ Write(internal/messaging/rabbitmq/client.go)
+  ⎿  Added 48 lines
+       7  const (
+       8    QueueTweetCreated  = "tweet.created"
+       9    QueueFollowCreated = "follow.created"
+      10 +                                                               
+      11 +  ExchangeFanoutRetry = "fanout.retry.exchange"                
+      12 +  QueueFanoutRetry    = "fanout.retry"                         
+      13 +                                                               
+      14 +  ExchangeFanoutWait = "fanout.wait.exchange"                  
+      15 +  QueueFanoutWait    = "fanout.wait"                           
+      16 +                                                               
+      17 +  QueueFanoutDead = "fanout.dead"                              
+      18  )
+      19  
+      20  func Connect(url string) (*amqp.Connection, error) {
+     ...
+      30    }
+      31    defer ch.Close()
+      32  
+      33 +  // colas pre-existentes                                      
+      34    for _, q := range []string{QueueTweetCreated, QueueFollowCrea
+          ted} {
+      35      if _, err := ch.QueueDeclare(q, true, false, false, false, 
+          nil); err != nil {
+      36        conn.Close()
+     ...
+      38      }
+      39    }
+      40  
+      41 +  // fanout.retry.exchange → fanout.retry (con DLX a fanout.wai
+         +t.exchange)                                                    
+      42 +  if err := ch.ExchangeDeclare(ExchangeFanoutRetry, "direct", t
+         +rue, false, false, false, nil); err != nil {                   
+      43 +    conn.Close()                                               
+      44 +    return nil, err                                            
+      45 +  }                                                            
+      46 +  if _, err := ch.QueueDeclare(QueueFanoutRetry, true, false, f
+         +alse, false, amqp.Table{                                       
+      47 +    "x-dead-letter-exchange": ExchangeFanoutWait,              
+      48 +  }); err != nil {                                             
+      49 +    conn.Close()                                               
+      50 +    return nil, err                                            
+      51 +  }                                                            
+      52 +  if err := ch.QueueBind(QueueFanoutRetry, QueueFanoutRetry, Ex
+         +changeFanoutRetry, false, nil); err != nil {                   
+      53 +    conn.Close()                                               
+      54 +    return nil, err                                            
+      55 +  }                                                            
+      56 +                                                               
+      57 +  // fanout.wait.exchange → fanout.wait (TTL 30s, DLX de vuelta
+         + a fanout.retry.exchange)                                      
+      58 +  if err := ch.ExchangeDeclare(ExchangeFanoutWait, "direct", tr
+         +ue, false, false, false, nil); err != nil {                    
+      59 +    conn.Close()                                               
+      60 +    return nil, err                                            
+      61 +  }                                                            
+      62 +  if _, err := ch.QueueDeclare(QueueFanoutWait, true, false, fa
+         +lse, false, amqp.Table{                                        
+      63 +    "x-message-ttl":          int32(30000),                    
+      64 +    "x-dead-letter-exchange": ExchangeFanoutRetry,             
+      65 +  }); err != nil {                                             
+      66 +    conn.Close()                                               
+      67 +    return nil, err                                            
+      68 +  }                                                            
+      69 +  if err := ch.QueueBind(QueueFanoutWait, QueueFanoutWait, Exch
+         +angeFanoutWait, false, nil); err != nil {                      
+      70 +    conn.Close()                                               
+      71 +    return nil, err                                            
+      72 +  }                                                            
+      73 +                                                               
+      74 +  // fanout.dead — cola final para replay manual               
+      75 +  if _, err := ch.QueueDeclare(QueueFanoutDead, true, false, fa
+         +lse, false, nil); err != nil {                                 
+      76 +    conn.Close()                                               
+      77 +    return nil, err                                            
+      78 +  }                                                            
+      79 +                                                               
+      80    return conn, nil
+      81  }
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Task 4: Publisher + DeadLetterPublisher adapter (con el fix del bug detectado)
+
+⏺ Update(internal/messaging/rabbitmq/publisher.go)
+  ⎿  Added 48 lines
+      24    return p.publish(QueueFollowCreated, evt)
+      25  }
+      26  
+      27 +func (p *Publisher) PublishFanoutRetry(ctx context.Context, evt
+         + domain.FanoutRetryEvent) error {                              
+      28 +  body, err := json.Marshal(evt)                               
+      29 +  if err != nil {                                              
+      30 +    return err                                                 
+      31 +  }                                                            
+      32 +  ch, err := p.conn.Channel()                                  
+      33 +  if err != nil {                                              
+      34 +    return err                                                 
+      35 +  }                                                            
+      36 +  defer ch.Close()                                             
+      37 +  return ch.Publish(ExchangeFanoutRetry, QueueFanoutRetry, fals
+         +e, false, amqp.Publishing{                                     
+      38 +    ContentType:  "application/json",                          
+      39 +    DeliveryMode: amqp.Persistent,                             
+      40 +    Body:         body,                                        
+      41 +  })                                                           
+      42 +}                                                              
+      43 +                                                               
+      44 +func (p *Publisher) PublishToDeadLetter(ctx context.Context, ev
+         +t domain.FanoutRetryEvent) error {                             
+      45 +  body, err := json.Marshal(evt)                               
+      46 +  if err != nil {                                              
+      47 +    return err                                                 
+      48 +  }                                                            
+      49 +  ch, err := p.conn.Channel()                                  
+      50 +  if err != nil {                                              
+      51 +    return err                                                 
+      52 +  }                                                            
+      53 +  defer ch.Close()                                             
+      54 +  return ch.Publish("", QueueFanoutDead, false, false, amqp.Pub
+         +lishing{                                                       
+      55 +    ContentType:  "application/json",                          
+      56 +    DeliveryMode: amqp.Persistent,                             
+      57 +    Body:         body,                                        
+      58 +  })                                                           
+      59 +}                                                              
+      60 +                                                               
+      61 +// DeadLetterPublisher adapta Publisher para implementar domain
+         +.FanoutRetryPublisher                                          
+      62 +// publicando a fanout.dead en lugar de fanout.retry.          
+      63 +type DeadLetterPublisher struct {                              
+      64 +  pub *Publisher                                               
+      65 +}                                                              
+      66 +                                                               
+      67 +func NewDeadLetterPublisher(pub *Publisher) *DeadLetterPublishe
+         +r {                                                            
+      68 +  return &DeadLetterPublisher{pub: pub}                        
+      69 +}                                                              
+      70 +                                                               
+      71 +func (d *DeadLetterPublisher) PublishFanoutRetry(ctx context.Co
+         +ntext, evt domain.FanoutRetryEvent) error {                    
+      72 +  return d.pub.PublishToDeadLetter(ctx, evt)                   
+      73 +}                                                              
+      74 +                                                               
+      75  func (p *Publisher) publish(queue string, payload any) error {
+      76    ch, err := p.conn.Channel()
+      77    if err != nil {
+
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Task 5: Consumer — retryPublisher y fanoutTweet (RED primero)
+
+⏺ Update(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Added 2 lines
+      2  
+      3  import (
+      4    "context"
+      5 +  "encoding/json"                                               
+      6    "errors"
+      7    "sync"
+      8    "sync/atomic"
+     ...
+      10    "time"
+      11  
+      12    "github.com/google/uuid"
+      13 +  amqp "github.com/rabbitmq/amqp091-go"                        
+      14    "uala/internal/domain"
+      15  )
+      16  
+
+⏺ Update(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Added 62 lines
+      108    }
+      109  }
+      110  
+      111 +// recordingRetryPublisher captura los eventos publicados.    
+      112 +type recordingRetryPublisher struct {                         
+      113 +  mu     sync.Mutex                                           
+      114 +  events []domain.FanoutRetryEvent                            
+      115 +}                                                             
+      116 +                                                              
+      117 +func (r *recordingRetryPublisher) PublishFanoutRetry(_ context
+          +.Context, evt domain.FanoutRetryEvent) error {                
+      118 +  r.mu.Lock()                                                 
+      119 +  defer r.mu.Unlock()                                         
+      120 +  r.events = append(r.events, evt)                            
+      121 +  return nil                                                  
+      122 +}                                                             
+      123 +                                                              
+      124 +func TestFanoutTweet_PublishesRetryOnAppendFailure(t *testing.
+          +T) {                                                          
+      125 +  followerID := uuid.New()                                    
+      126 +  followers := []uuid.UUID{followerID}                        
+      127 +                                                              
+      128 +  retryPub := &recordingRetryPublisher{}                      
+      129 +  c := &Consumer{                                             
+      130 +    fanout:         &errorFanout{},                           
+      131 +    retryPublisher: retryPub,                                 
+      132 +    fanoutWorkers:  fanoutConcurrency,                        
+      133 +  }                                                           
+      134 +                                                              
+      135 +  evt := domain.TweetCreatedEvent{                            
+      136 +    TweetID:   uuid.New(),                                    
+      137 +    UserID:    uuid.New(),                                    
+      138 +    Content:   "hello",                                       
+      139 +    CreatedAt: time.Now(),                                    
+      140 +  }                                                           
+      141 +  _ = c.fanoutTweet(context.Background(), evt, followers)     
+      142 +                                                              
+      143 +  retryPub.mu.Lock()                                          
+      144 +  defer retryPub.mu.Unlock()                                  
+      145 +  if len(retryPub.events) != 1 {                              
+      146 +    t.Fatalf("want 1 retry event published, got %d", len(retry
+          +Pub.events))                                                  
+      147 +  }                                                           
+      148 +  if retryPub.events[0].FollowerID != followerID {            
+      149 +    t.Errorf("want followerID %s, got %s", followerID, retryPu
+          +b.events[0].FollowerID)                                       
+      150 +  }                                                           
+      151 +  if retryPub.events[0].Tweet.Content != "hello" {            
+      152 +    t.Errorf("want tweet content 'hello', got %s", retryPub.ev
+          +ents[0].Tweet.Content)                                        
+      153 +  }                                                           
+      154 +}                                                             
+      155 +                                                              
+      156 +func TestFanoutTweet_CountsRetryPublishAsHandled(t *testing.T)
+          + {                                                            
+      157 +  followers := []uuid.UUID{uuid.New(), uuid.New()}            
+      158 +                                                              
+      159 +  c := &Consumer{                                             
+      160 +    fanout:         &errorFanout{},                           
+      161 +    retryPublisher: &recordingRetryPublisher{},               
+      162 +    fanoutWorkers:  fanoutConcurrency,                        
+      163 +  }                                                           
+      164 +                                                              
+      165 +  evt := domain.TweetCreatedEvent{TweetID: uuid.New(), UserID:
+          + uuid.New(), CreatedAt: time.Now()}                           
+      166 +  err := c.fanoutTweet(context.Background(), evt, followers)  
+      167 +                                                              
+      168 +  if err != nil {                                             
+      169 +    t.Errorf("expected nil when retries are published, got %v"
+          +, err)                                                        
+      170 +  }                                                           
+      171 +}                                                             
+      172 +                                                              
+      173  func TestFanoutTweet_PartialFail_ReturnsNil(t *testing.T) {
+      174    followers := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+      175    // first 2 fail, last 1 succeeds
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -run
+      "TestFanoutTweet_Publishes|TestFanoutTweet_Counts" -v 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/consumer_test.go:5:2: "encoding/json" imported 
+     and not used
+     internal/messaging/rabbitmq/consumer_test.go:13:2: 
+     "github.com/rabbitmq/amqp091-go" imported as amqp and not used
+     internal/messaging/rabbitmq/consumer_test.go:131:3: unknown field 
+     retryPublisher in struct literal of type Consumer
+     internal/messaging/rabbitmq/consumer_test.go:161:3: unknown field 
+     retryPublisher in struct literal of type Consumer
+     FAIL       uala/internal/messaging/rabbitmq [build failed]
+     FAIL
+
+⏺ Falla correctamente. Ahora implemento:
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 1 line
+      24    userTweetsRepo domain.UserTweetsRepository
+      25    backfillLimit  int
+      26    fanoutWorkers  int
+      27 +  retryPublisher domain.FanoutRetryPublisher                   
+      28  }
+      29  
+      30  func NewConsumer(
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 5 lines
+      44    }
+      45  }
+      46  
+      47 +func (c *Consumer) WithRetryPublisher(p domain.FanoutRetryPubli
+         +sher) *Consumer {                                              
+      48 +  c.retryPublisher = p                                         
+      49 +  return c                                                     
+      50 +}                                                              
+      51 +                                                               
+      52  func (c *Consumer) ConsumeTweets(ctx context.Context) {
+      53    ch, msgs := c.openChannel(QueueTweetCreated)
+      54    if ch == nil {
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 16 lines, removed 6 lines
+      144    }
+      145  
+      146    var (
+      147 -    sem       = make(chan struct{}, c.fanoutWorkers)          
+      148 -    g, gctx   = errgroup.WithContext(ctx)                     
+      149 -    succeeded atomic.Int64                                    
+      147 +    sem     = make(chan struct{}, c.fanoutWorkers)            
+      148 +    g, gctx = errgroup.WithContext(ctx)                       
+      149 +    handled atomic.Int64                                      
+      150    )
+      151  
+      152    for _, followerID := range followers {
+     ...
+      156        defer func() { <-sem }()
+      157        if err := c.fanout.AppendTweet(gctx, fid, item); err != 
+           nil {
+      158          log.Printf("rabbitmq: fanout tweet to %s: %v", fid, er
+           r)
+      159 +        if c.retryPublisher != nil {                          
+      160 +          if pubErr := c.retryPublisher.PublishFanoutRetry(ctx
+          +, domain.FanoutRetryEvent{                                    
+      161 +            FollowerID: fid,                                  
+      162 +            Tweet:      item,                                 
+      163 +          }); pubErr != nil {                                 
+      164 +            log.Printf("rabbitmq: publish retry for %s: %v", f
+          +id, pubErr)                                                   
+      165 +            return nil                                        
+      166 +          }                                                   
+      167 +          handled.Add(1)                                      
+      168 +        }                                                     
+      169          return nil
+      170        }
+      161 -      succeeded.Add(1)                                        
+      171 +      handled.Add(1)                                          
+      172        return nil
+      173      })
+      174    }
+      175  
+      176    _ = g.Wait()
+      177  
+      168 -  if len(followers) > 0 && succeeded.Load() == 0 {            
+      169 -    return errors.New("all fanout writes failed")             
+      178 +  if len(followers) > 0 && handled.Load() == 0 {              
+      179 +    return errors.New("all fanout writes failed and no retries
+          + enqueued")                                                   
+      180    }
+      181    return nil
+      182  }
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -v 2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/consumer_test.go:5:2: "encoding/json" imported 
+     and not used
+     internal/messaging/rabbitmq/consumer_test.go:13:2: 
+     "github.com/rabbitmq/amqp091-go" imported as amqp and not used
+     FAIL       uala/internal/messaging/rabbitmq [build failed]
+     FAIL
+
+⏺ Los imports de Task 6 están en el test pero todavía no hay código que los use.
+   Los dejo, se usarán en la próxima task. Por ahora corro solo los tests de
+  Task 5:
+
+⏺ Bash(go vet ./internal/messaging/rabbitmq/... 2>&1 | head -5; go build ./...
+      2>&1)
+  ⎿  # uala/internal/messaging/rabbitmq
+     # [uala/internal/messaging/rabbitmq]
+     vet: internal/messaging/rabbitmq/consumer_test.go:5:2: "encoding/json"
+      imported and not used
+
+⏺ Los imports están solo en el test. La producción compila. Avanzo a Task 6
+  donde se usarán — los tests de ambas tasks viven en el mismo archivo.
+
+⏺ Task 6: ConsumeFanoutRetry — agrego los 3 tests restantes:
+
+⏺ Update(internal/messaging/rabbitmq/consumer_test.go)
+  ⎿  Added 87 lines
+      182      t.Errorf("expected nil when at least one AppendTweet succe
+           eds, got %v", err)
+      183    }
+      184  }
+      185 +                                                              
+      186 +func makeDelivery(body []byte, xDeathCount int64) amqp.Deliver
+          +y {                                                           
+      187 +  headers := amqp.Table{}                                     
+      188 +  if xDeathCount > 0 {                                        
+      189 +    headers["x-death"] = []interface{}{                       
+      190 +      amqp.Table{                                             
+      191 +        "queue": QueueFanoutRetry,                            
+      192 +        "count": xDeathCount,                                 
+      193 +      },                                                      
+      194 +    }                                                         
+      195 +  }                                                           
+      196 +  return amqp.Delivery{Body: body, Headers: headers}          
+      197 +}                                                             
+      198 +                                                              
+      199 +func TestHandleFanoutRetry_AcksOnSuccess(t *testing.T) {      
+      200 +  c := &Consumer{fanout: &concurrentFanout{}, fanoutWorkers: f
+          +anoutConcurrency}                                             
+      201 +                                                              
+      202 +  evt := domain.FanoutRetryEvent{                             
+      203 +    FollowerID: uuid.New(),                                   
+      204 +    Tweet:      domain.TweetItem{ID: uuid.New(), Content: "hi"
+          +, CreatedAt: time.Now()},                                     
+      205 +  }                                                           
+      206 +  body, _ := json.Marshal(evt)                                
+      207 +  d := makeDelivery(body, 0)                                  
+      208 +                                                              
+      209 +  acked, nacked := c.handleFanoutRetry(context.Background(), d
+          +)                                                             
+      210 +                                                              
+      211 +  if !acked {                                                 
+      212 +    t.Error("expected Ack on successful AppendTweet")         
+      213 +  }                                                           
+      214 +  if nacked {                                                 
+      215 +    t.Error("expected no Nack on success")                    
+      216 +  }                                                           
+      217 +}                                                             
+      218 +                                                              
+      219 +func TestHandleFanoutRetry_NacksOnFailure(t *testing.T) {     
+      220 +  c := &Consumer{fanout: &errorFanout{}, fanoutWorkers: fanout
+          +Concurrency}                                                  
+      221 +                                                              
+      222 +  evt := domain.FanoutRetryEvent{                             
+      223 +    FollowerID: uuid.New(),                                   
+      224 +    Tweet:      domain.TweetItem{ID: uuid.New(), CreatedAt: ti
+          +me.Now()},                                                    
+      225 +  }                                                           
+      226 +  body, _ := json.Marshal(evt)                                
+      227 +  d := makeDelivery(body, 2)                                  
+      228 +                                                              
+      229 +  acked, nacked := c.handleFanoutRetry(context.Background(), d
+          +)                                                             
+      230 +                                                              
+      231 +  if acked {                                                  
+      232 +    t.Error("expected no Ack on failed AppendTweet")          
+      233 +  }                                                           
+      234 +  if !nacked {                                                
+      235 +    t.Error("expected Nack on failed AppendTweet")            
+      236 +  }                                                           
+      237 +}                                                             
+      238 +                                                              
+      239 +func TestHandleFanoutRetry_DeadLettersAt10(t *testing.T) {    
+      240 +  deadPub := &recordingRetryPublisher{}                       
+      241 +  c := &Consumer{                                             
+      242 +    fanout:        &errorFanout{},                            
+      243 +    deadLetterPub: deadPub,                                   
+      244 +    fanoutWorkers: fanoutConcurrency,                         
+      245 +  }                                                           
+      246 +                                                              
+      247 +  followerID := uuid.New()                                    
+      248 +  evt := domain.FanoutRetryEvent{                             
+      249 +    FollowerID: followerID,                                   
+      250 +    Tweet:      domain.TweetItem{ID: uuid.New(), CreatedAt: ti
+          +me.Now()},                                                    
+      251 +  }                                                           
+      252 +  body, _ := json.Marshal(evt)                                
+      253 +  d := makeDelivery(body, 10)                                 
+      254 +                                                              
+      255 +  acked, nacked := c.handleFanoutRetry(context.Background(), d
+          +)                                                             
+      256 +                                                              
+      257 +  if !acked {                                                 
+      258 +    t.Error("expected Ack after dead-lettering")              
+      259 +  }                                                           
+      260 +  if nacked {                                                 
+      261 +    t.Error("expected no Nack after dead-lettering")          
+      262 +  }                                                           
+      263 +  deadPub.mu.Lock()                                           
+      264 +  defer deadPub.mu.Unlock()                                   
+      265 +  if len(deadPub.events) != 1 {                               
+      266 +    t.Fatalf("want 1 dead letter event, got %d", len(deadPub.e
+          +vents))                                                       
+      267 +  }                                                           
+      268 +  if deadPub.events[0].FollowerID != followerID {             
+      269 +    t.Errorf("dead letter event has wrong followerID")        
+      270 +  }                                                           
+      271 +}                                                             
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -run "TestHandleFanoutRetry" -v
+       2>&1)
+  ⎿  Error: Exit code 1
+     # uala/internal/messaging/rabbitmq [uala/internal/messaging/rabbitmq.test]
+     internal/messaging/rabbitmq/consumer_test.go:209:21: c.handleFanoutRetry 
+     undefined (type *Consumer has no field or method handleFanoutRetry)
+     internal/messaging/rabbitmq/consumer_test.go:229:21: c.handleFanoutRetry 
+     undefined (type *Consumer has no field or method handleFanoutRetry)
+     internal/messaging/rabbitmq/consumer_test.go:243:3: unknown field 
+     deadLetterPub in struct literal of type Consumer
+     internal/messaging/rabbitmq/consumer_test.go:255:21: c.handleFanoutRetry 
+     undefined (type *Consumer has no field or method handleFanoutRetry)
+     FAIL       uala/internal/messaging/rabbitmq [build failed]
+     FAIL
+
+⏺ Falla correctamente. Implemento:
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 1 line
+      25    backfillLimit  int
+      26    fanoutWorkers  int
+      27    retryPublisher domain.FanoutRetryPublisher
+      28 +  deadLetterPub  domain.FanoutRetryPublisher                   
+      29  }
+      30  
+      31  func NewConsumer(
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 5 lines
+      50    return c
+      51  }
+      52  
+      53 +func (c *Consumer) WithDeadLetterPublisher(p domain.FanoutRetry
+         +Publisher) *Consumer {                                         
+      54 +  c.deadLetterPub = p                                          
+      55 +  return c                                                     
+      56 +}                                                              
+      57 +                                                               
+      58  func (c *Consumer) ConsumeTweets(ctx context.Context) {
+      59    ch, msgs := c.openChannel(QueueTweetCreated)
+      60    if ch == nil {
+
+⏺ Ahora agrego xDeathCount, handleFanoutRetry y ConsumeFanoutRetry al final del
+  consumer:
+
+⏺ Update(internal/messaging/rabbitmq/consumer.go)
+  ⎿  Added 71 lines
+      187    return nil
+      188  }
+      189  
+      190 +const maxFanoutRetries = 10                                   
+      191 +                                                              
+      192 +func xDeathCount(d amqp.Delivery) int64 {                     
+      193 +  deaths, ok := d.Headers["x-death"].([]interface{})          
+      194 +  if !ok {                                                    
+      195 +    return 0                                                  
+      196 +  }                                                           
+      197 +  for _, entry := range deaths {                              
+      198 +    table, ok := entry.(amqp.Table)                           
+      199 +    if !ok {                                                  
+      200 +      continue                                                
+      201 +    }                                                         
+      202 +    if table["queue"] == QueueFanoutRetry {                   
+      203 +      if count, ok := table["count"].(int64); ok {            
+      204 +        return count                                          
+      205 +      }                                                       
+      206 +    }                                                         
+      207 +  }                                                           
+      208 +  return 0                                                    
+      209 +}                                                             
+      210 +                                                              
+      211 +func (c *Consumer) handleFanoutRetry(ctx context.Context, d am
+          +qp.Delivery) (acked, nacked bool) {                           
+      212 +  var evt domain.FanoutRetryEvent                             
+      213 +  if err := json.Unmarshal(d.Body, &evt); err != nil {        
+      214 +    log.Printf("rabbitmq: unmarshal fanout retry: %v", err)   
+      215 +    return false, true                                        
+      216 +  }                                                           
+      217 +                                                              
+      218 +  if xDeathCount(d) >= maxFanoutRetries {                     
+      219 +    if c.deadLetterPub != nil {                               
+      220 +      if err := c.deadLetterPub.PublishFanoutRetry(ctx, evt); 
+          +err != nil {                                                  
+      221 +        log.Printf("rabbitmq: publish dead letter for %s: %v",
+          + evt.FollowerID, err)                                         
+      222 +      }                                                       
+      223 +    }                                                         
+      224 +    metrics.FanoutDeadLetterTotal.WithLabelValues(evt.Follower
+          +ID.String()).Inc()                                            
+      225 +    log.Printf("rabbitmq: fanout dead letter follower=%s tweet
+          +=%s", evt.FollowerID, evt.Tweet.ID)                           
+      226 +    return true, false                                        
+      227 +  }                                                           
+      228 +                                                              
+      229 +  if err := c.fanout.AppendTweet(ctx, evt.FollowerID, evt.Twee
+          +t); err != nil {                                              
+      230 +    log.Printf("rabbitmq: retry AppendTweet for %s: %v", evt.F
+          +ollowerID, err)                                               
+      231 +    return false, true                                        
+      232 +  }                                                           
+      233 +  return true, false                                          
+      234 +}                                                             
+      235 +                                                              
+      236 +func (c *Consumer) ConsumeFanoutRetry(ctx context.Context) {  
+      237 +  ch, msgs := c.openChannel(QueueFanoutRetry)                 
+      238 +  if ch == nil {                                              
+      239 +    return                                                    
+      240 +  }                                                           
+      241 +  defer ch.Close()                                            
+      242 +                                                              
+      243 +  for {                                                       
+      244 +    select {                                                  
+      245 +    case <-ctx.Done():                                        
+      246 +      return                                                  
+      247 +    case d, ok := <-msgs:                                     
+      248 +      if !ok {                                                
+      249 +        return                                                
+      250 +      }                                                       
+      251 +      acked, nacked := c.handleFanoutRetry(ctx, d)            
+      252 +      if acked {                                              
+      253 +        _ = d.Ack(false)                                      
+      254 +      } else if nacked {                                      
+      255 +        _ = d.Nack(false, false)                              
+      256 +      }                                                       
+      257 +    }                                                         
+      258 +  }                                                           
+      259 +}                                                             
+      260 +                                                              
+      261  func (c *Consumer) handleFollowCreated(ctx context.Context, d 
+           amqp.Delivery) {
+      262    var evt domain.FollowCreatedEvent
+      263    if err := json.Unmarshal(d.Body, &evt); err != nil {
+
+⏺ Bash(go test ./internal/messaging/rabbitmq/... -v 2>&1)
+  ⎿  === RUN   TestHandleTweetCreated_FanoutIsConcurrent
+     --- PASS: TestHandleTweetCreated_FanoutIsConcurrent (0.01s)
+     === RUN   TestFanoutTweet_AllFail_ReturnsError
+     … +26 lines (ctrl+o to expand)
+
+⏺ Todos los tests pasan.
+
+⏺ Task 7: Wiring en main.go
+
+⏺ Update(cmd/api/main.go)
+  ⎿  Added 5 lines, removed 1 line
+      80  
+      81    publisher := rabbitmq.NewPublisher(amqpConn)
+      82  
+      83 -  consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisT
+         -imeline, pgTimelineRepo, cfg.FollowBackfillLimit)              
+      83 +  consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisT
+         +imeline, pgTimelineRepo, cfg.FollowBackfillLimit).             
+      84 +    WithRetryPublisher(publisher).                             
+      85 +    WithDeadLetterPublisher(rabbitmq.NewDeadLetterPublisher(pub
+         +lisher))                                                       
+      86 +                                                               
+      87    go consumer.ConsumeTweets(ctx)
+      88    go consumer.ConsumeFollows(ctx)
+      89 +  go consumer.ConsumeFanoutRetry(ctx)                          
+      90  
+      91    userUC := usecase.NewUserUseCase(userRepo)
+      92    tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, publi
+          sher)
+
+⏺ Bash(go build ./... 2>&1 && go test ./... 2>&1)  ⎿  ?          uala/cmd/api    [no test files]
+     ?          uala/internal/domain    [no test files]
+     ok         uala/internal/handler   1.508s
+     … +6 lines (ctrl+o to expand)
+
+⏺ Todo verde, incluyendo los tests de handler que antes fallaban por el gap
+  pre-existente — resulta que sí pasan cuando hay infra disponible.
+
+⏺ Skill(superpowers:finishing-a-development-branch)
+  ⎿  Successfully loaded skill
+
+⏺ Usando el skill finishing-a-development-branch para completar este trabajo.
+
+⏺ Bash(go test ./... 2>&1)
+  ⎿  ?          uala/cmd/api    [no test files]
+     ?          uala/internal/domain    [no test files]
+     ok         uala/internal/handler   (cached)
+     … +6 lines (ctrl+o to expand)
+
+⏺ Todos los tests pasan.
+
+⏺ Bash(git status 2>&1 | head -5)
+  ⎿  On branch master
+     Your branch is up to date with 'origin/master'.
+     … +2 lines (ctrl+o to expand)
+
+⏺ El proyecto no está en un worktree separado, estamos directamente en master.
+  Dado el trabajo no está commiteado aún, te presento las opciones:
+
+  ---
+  Implementación completa. ¿Qué querés hacer?
+
+  1. Commit en master — commitear todos los cambios directamente en la rama
+  actual
+  2. Crear una rama y PR — mover los cambios a una feature branch y abrir un PR
+  3. Dejar como está — los cambios quedan sin commitear, los manejás vos después
+  4. Descartar este trabajo — revertir todos los cambios
+
+  ¿Cuál elegís?
+
+✻ Cogitated for 5m 28s
+
+❯ 1                                                                             
+
+⏺ Bash(git diff --stat 2>&1)
+  ⎿   cmd/api/main.go                            |   6 +-
+      internal/domain/events.go                  |   9 ++
+      internal/handler/setup_test.go             |   2 +-
+     … +8 lines (ctrl+o to expand)
+
+⏺ Bash(git add internal/domain/events.go internal/metrics/metrics.go
+      internal/messaging/rabbitmq/client.go
+      internal/messaging/rabbitmq/publisher.go internal/messaging/…)
+  ⎿  [master 4aedd2b] feat(fanout): DLQ por follower con retry nativo Rabbi
+     tMQ
+      10 files changed, 602 insertions(+), 21 deletions(-)
+      create mode 100644 internal/messaging/rabbitmq/consumer_test.go
+
+⏺ Commiteado en master. Resumen de lo que incluye:
+
+  - Gap #1 — fanout concurrente con errgroup + semáforo de 100 workers
+  - Gap #2 — fix aridad en setup_test.go
+  - DLQ — fanout.retry → fanout.wait (30s TTL) → fanout.retry, dead-letter a
+  fanout.dead a los 10 intentos
+  - Idempotencia — AppendTweet deduplicado por tweet ID via sorted set + hash en
+   Redis
+  - Métrica — fanout_dead_letter_total{follower_id} para alertar followers con
+  problemas persistentes
+
+❯ /context                                                                      
+  ⎿  Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛁ ⛁   Sonnet 4.6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-sonnet-4-6
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   139.4k/200k tokens (70%)
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ 
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Estimated usage by category
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ System prompt: 6.4k tokens (3.2%)
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ System tools: 8.7k tokens (4.4%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 247 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Skills: 2k tokens (1.0%)
+     ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Messages: 122.5k tokens (61.2%)
+                           ⛶ Free space: 27.2k (13.6%)
+                           ⛝ Autocompact buffer: 33k tokens (16.5%)
+
+     MCP tools · /mcp (loaded on-demand)
+
+     Available
+     ├ mcp__claude_ai_Gmail__create_draft
+     ├ mcp__claude_ai_Gmail__create_label
+     ├ mcp__claude_ai_Gmail__get_thread
+     ├ mcp__claude_ai_Gmail__label_message
+     ├ mcp__claude_ai_Gmail__label_thread
+     ├ mcp__claude_ai_Gmail__list_drafts
+     ├ mcp__claude_ai_Gmail__list_labels
+     ├ mcp__claude_ai_Gmail__search_threads
+     ├ mcp__claude_ai_Gmail__unlabel_message
+     ├ mcp__claude_ai_Gmail__unlabel_thread
+     ├ mcp__claude_ai_Google_Drive__authenticate
+     └ mcp__claude_ai_Google_Drive__complete_authentication
+
+     Custom agents · /agents
+
+     Plugin
+     └ superpowers:code-reviewer: 247 tokens
+
+     Skills · /skills
+
+     User
+     ├ golang: 49 tokens
+     ├ golang:architecture: 14 tokens
+     ├ golang:dependency-injection: 12 tokens
+     ├ golang:repository-layer: 10 tokens
+     ├ golang:handler-layer: 10 tokens
+     ├ golang:modules-tooling: 10 tokens
+     ├ golang:logging: 10 tokens
+     ├ golang:usecase-layer: 9 tokens
+     ├ golang:project-layout: 9 tokens
+     ├ golang:error-handling: 9 tokens
+     ├ golang:domain-layer: 8 tokens
+     ├ golang:performance: 8 tokens
+     ├ golang:concurrency: 8 tokens
+     ├ golang:interfaces: 7 tokens
+     ├ golang:context: 6 tokens
+     ├ golang:testing: 6 tokens
+     ├ golang:security: 6 tokens
+     └ golang:naming: 5 tokens
+
+     Plugin
+     ├ backend-best-practices: 204 tokens
+     ├ receiving-code-review: 67 tokens
+     ├ verification-before-completion: 67 tokens
+     ├ finishing-a-development-branch: 61 tokens
+     ├ using-git-worktrees: 59 tokens
+     ├ brainstorming: 56 tokens
+     ├ using-superpowers: 47 tokens
+     ├ dispatching-parallel-agents: 37 tokens
+     ├ requesting-code-review: 36 tokens
+     ├ executing-plans: 33 tokens
+     ├ writing-skills: 31 tokens
+     ├ systematic-debugging: 31 tokens
+     ├ subagent-driven-development: 31 tokens
+     ├ test-driven-development: 29 tokens
+     ├ writing-plans: 28 tokens
+     ├ superpowers:execute-plan: 22 tokens
+     ├ superpowers:write-plan: 21 tokens
+     └ superpowers:brainstorm: 21 tokens
+
+      Suggestions
+      ℹ File reads using 21.3k tokens (11%) → save ~6.4k
+        If you are re-reading files, consider referencing earlier reads. Use 
+     offset/limit for large files.

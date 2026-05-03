@@ -1,0 +1,1071 @@
+ ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/Katas/uala
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ quiero tu opinion sobre renombrar los useCase para  que en el nombre incluyan 
+   el verbo y todos tengan un metodo .execute, no se si es un anti patron de    
+  golang                                                                        
+
+⏺ Checking the relevant skill before responding.
+
+⏺ Skill(golang:usecase-layer)
+  ⎿  Successfully loaded skill
+
+⏺ Let me look at the current use case structure quickly.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ La situación actual: cada struct ya tiene un solo método de negocio
+  (CreateTweet, Follow, GetTimeline, Create), así que ya estás a mitad de
+  camino. La pregunta real es si vale la pena el paso final: renombrar a
+  CreateTweetUseCase{}.Execute().
+
+  Mi opinión honesta: el patrón es válido pero tiene un trade-off claro en Go.
+
+  A favor:
+  - API uniforme: todo use case tiene .Execute(ctx, input), los handlers se
+  vuelven predecibles
+  - El verb en el nombre del struct deja claro la intención sin ambigüedad:
+  CreateTweetUseCase vs TweetUseCase
+  - Es lo que recomienda el skill golang:usecase-layer de este proyecto
+
+  En contra:
+  - uc.Execute(ctx, ...) en el call site dice menos que uc.CreateTweet(ctx, ...)
+   — perdés contexto sin ganar nada funcional
+  - En Go idiomático el nombre del método es semántico; Execute es más Java/C#
+  (Command Pattern)
+  - Refactor no trivial: hay que tocar handlers, mocks en tests, y los handlers
+  tienen mini-interfaces privadas para tests
+
+  ¿Es anti-patrón Go? No exactamente. Es una adaptación del Command Pattern que
+  funciona bien, pero no es el estilo más "Go-nativo". La guía oficial de Go
+  prefiere métodos con nombres descriptivos.
+
+  Mi recomendación para este kata: si el objetivo es aprender arquitectura
+  limpia, adoptá el patrón del skill (CreateTweetUseCase{}.Execute()) — es una
+  decisión de diseño coherente y defendible. Si el objetivo fuera producción, me
+   quedaría con los nombres descriptivos actuales y solo separaría en
+  subpaquetes si los structs crecen.
+
+  El costo del refactor en este repo es bajo (4 use cases, structs pequeños). Si
+   querés hacerlo, puedo guiarte.
+
+✻ Baked for 51s
+
+※ recap: Discutiendo si renombrar los use cases para incluir el verbo en el nombre del struct y usar un método `.Execute` uniforme. El próximo paso sería decidir si querés hacer el refactor o dejarlo como está.
+
+❯ haz el refactor                                                               
+
+⏺ Skill(superpowers:test-driven-development)
+  ⎿  Successfully loaded skill
+
+⏺ Voy a leer todos los archivos relevantes antes de empezar el refactor.
+
+  Read 8 files (ctrl+o to expand)
+
+⏺ Ahora leo los handlers y el wire-up de dependencias.
+
+  Searched for 1 pattern, read 4 files (ctrl+o to expand)
+
+⏺ Bash(find /Users/gonza/Katas/uala/internal/handler -name "*_test.go" | xargs
+      grep -l "UseCase\|CreateUser\|CreateTweet\|Follow\|GetTimeline"
+      2>/dev/null)
+  ⎿  /Users/gonza/Katas/uala/internal/handler/follow_test.go
+     /Users/gonza/Katas/uala/internal/handler/timeline_test.go
+     /Users/gonza/Katas/uala/internal/handler/mocks_test.go
+     … +2 lines (ctrl+o to expand)
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Tengo todo el panorama. El refactor toca: 4 use cases, 4 handlers + mocks, 4
+  test files, y main.go. Ejecuto los cambios en paralelo.
+
+⏺ Update(internal/usecase/user.go)
+  ⎿  Added 4 lines, removed 4 lines
+       8    "uala/internal/domain"
+       9  )
+      10  
+      11 -type UserUseCase struct {                                      
+      11 +type CreateUserUseCase struct {                                
+      12    repo domain.UserRepository
+      13  }
+      14  
+      15 -func NewUserUseCase(repo domain.UserRepository) *UserUseCase { 
+      16 -  return &UserUseCase{repo: repo}                              
+      15 +func NewCreateUserUseCase(repo domain.UserRepository) *CreateUs
+         +erUseCase {                                                    
+      16 +  return &CreateUserUseCase{repo: repo}                        
+      17  }
+      18  
+      19 -func (uc *UserUseCase) CreateUser(ctx context.Context, username
+         - string) (*domain.User, error) {                               
+      19 +func (uc *CreateUserUseCase) Execute(ctx context.Context, usern
+         +ame string) (*domain.User, error) {                            
+      20    if username == "" {
+      21      return nil, domain.ErrEmptyUsername
+      22    }
+
+⏺ Update(internal/usecase/tweet.go)
+  ⎿  Added 6 lines, removed 6 lines
+      10    "uala/internal/domain"
+      11  )
+      12  
+      13 -type TweetUseCase struct {                                     
+      13 +type CreateTweetUseCase struct {                               
+      14    userRepo  domain.UserRepository
+      15    tweetRepo domain.TweetRepository
+      16    publisher domain.TweetEventPublisher
+      17    logger    *slog.Logger
+      18  }
+      19  
+      20 -func NewTweetUseCase(                                          
+      20 +func NewCreateTweetUseCase(                                    
+      21    userRepo domain.UserRepository,
+      22    tweetRepo domain.TweetRepository,
+      23    publisher domain.TweetEventPublisher,
+      24 -) *TweetUseCase {                                              
+      25 -  return &TweetUseCase{                                        
+      24 +) *CreateTweetUseCase {                                        
+      25 +  return &CreateTweetUseCase{                                  
+      26      userRepo:  userRepo,
+      27      tweetRepo: tweetRepo,
+      28      publisher: publisher,
+     ...
+      30    }
+      31  }
+      32  
+      33 -func (uc *TweetUseCase) WithLogger(l *slog.Logger) *TweetUseCas
+         -e {                                                            
+      33 +func (uc *CreateTweetUseCase) WithLogger(l *slog.Logger) *Creat
+         +eTweetUseCase {                                                
+      34    uc.logger = l
+      35    return uc
+      36  }
+      37  
+      38 -func (uc *TweetUseCase) CreateTweet(ctx context.Context, userID
+         - uuid.UUID, content string) (*domain.Tweet, error) {           
+      38 +func (uc *CreateTweetUseCase) Execute(ctx context.Context, user
+         +ID uuid.UUID, content string) (*domain.Tweet, error) {         
+      39    if content == "" {
+      40      return nil, domain.ErrEmptyContent
+      41    }
+
+⏺ Update(internal/usecase/follow.go)
+  ⎿  Added 5 lines, removed 5 lines
+       9    "uala/internal/domain"
+      10  )
+      11  
+      12 -type FollowUseCase struct {                                    
+      12 +type FollowUserUseCase struct {                                
+      13    userRepo   domain.UserRepository
+      14    followRepo domain.FollowRepository
+      15    publisher  domain.FollowEventPublisher
+      16    logger     *slog.Logger
+      17  }
+      18  
+      19 -func NewFollowUseCase(userRepo domain.UserRepository, followRep
+         -o domain.FollowRepository, publisher domain.FollowEventPublishe
+         -r) *FollowUseCase {                                            
+      20 -  return &FollowUseCase{userRepo: userRepo, followRepo: followR
+         -epo, publisher: publisher, logger: slog.Default()}             
+      19 +func NewFollowUserUseCase(userRepo domain.UserRepository, follo
+         +wRepo domain.FollowRepository, publisher domain.FollowEventPubl
+         +isher) *FollowUserUseCase {                                    
+      20 +  return &FollowUserUseCase{userRepo: userRepo, followRepo: fol
+         +lowRepo, publisher: publisher, logger: slog.Default()}         
+      21  }
+      22  
+      23 -func (uc *FollowUseCase) WithLogger(l *slog.Logger) *FollowUseC
+         -ase {                                                          
+      23 +func (uc *FollowUserUseCase) WithLogger(l *slog.Logger) *Follow
+         +UserUseCase {                                                  
+      24    uc.logger = l
+      25    return uc
+      26  }
+      27  
+      28 -func (uc *FollowUseCase) Follow(ctx context.Context, followerID
+         -, followeeID uuid.UUID) error {                                
+      28 +func (uc *FollowUserUseCase) Execute(ctx context.Context, follo
+         +werID, followeeID uuid.UUID) error {                           
+      29    if followerID == followeeID {
+      30      return domain.ErrSelfFollow
+      31    }
+
+⏺ Update(internal/usecase/timeline.go)
+  ⎿  Added 8 lines, removed 8 lines
+       9    "uala/internal/domain"
+      10  )
+      11  
+      12 -type TimelineUseCase struct {                                  
+      13 -  userRepo        domain.UserRepository                        
+      14 -  timelineRepo    domain.TimelineRepository                    
+      15 -  activityPub     domain.UserActivityPublisher                 
+      12 +type GetTimelineUseCase struct {                               
+      13 +  userRepo     domain.UserRepository                           
+      14 +  timelineRepo domain.TimelineRepository                       
+      15 +  activityPub  domain.UserActivityPublisher                    
+      16  }
+      17  
+      18 -func NewTimelineUseCase(userRepo domain.UserRepository, timelin
+         -eRepo domain.TimelineRepository) *TimelineUseCase {            
+      19 -  return &TimelineUseCase{userRepo: userRepo, timelineRepo: tim
+         -elineRepo}                                                     
+      18 +func NewGetTimelineUseCase(userRepo domain.UserRepository, time
+         +lineRepo domain.TimelineRepository) *GetTimelineUseCase {      
+      19 +  return &GetTimelineUseCase{userRepo: userRepo, timelineRepo: 
+         +timelineRepo}                                                  
+      20  }
+      21  
+      22 -func (uc *TimelineUseCase) WithUserActivityPublisher(p domain.U
+         -serActivityPublisher) *TimelineUseCase {                       
+      22 +func (uc *GetTimelineUseCase) WithUserActivityPublisher(p domai
+         +n.UserActivityPublisher) *GetTimelineUseCase {                 
+      23    uc.activityPub = p
+      24    return uc
+      25  }
+      26  
+      27 -func (uc *TimelineUseCase) GetTimeline(ctx context.Context, use
+         -rID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, e
+         -rror) {                                                        
+      27 +func (uc *GetTimelineUseCase) Execute(ctx context.Context, user
+         +ID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, er
+         +ror) {                                                         
+      28    if _, err := uc.userRepo.GetByID(ctx, userID); err != nil {
+      29      return nil, err
+      30    }
+
+⏺ Ahora los tests de use cases y los handlers en paralelo.
+⏺ Update(internal/usecase/user_test.go)
+  ⎿  Added 3 lines, removed 3 lines
+      10  )
+      11  
+      12  func TestUserUseCase_CreateUser_OK(t *testing.T) {
+      13 -  uc := usecase.NewUserUseCase(&mockUserRepo{})                
+      13 +  uc := usecase.NewCreateUserUseCase(&mockUserRepo{})          
+      14    user, err := uc.CreateUser(context.Background(), "alice")
+      15    if err != nil {
+      16      t.Fatalf("unexpected error: %v", err)
+     ...
+      24  }
+      25  
+      26  func TestUserUseCase_CreateUser_EmptyUsername(t *testing.T) {
+      27 -  uc := usecase.NewUserUseCase(&mockUserRepo{})                
+      27 +  uc := usecase.NewCreateUserUseCase(&mockUserRepo{})          
+      28    _, err := uc.CreateUser(context.Background(), "")
+      29    if err != domain.ErrEmptyUsername {
+      30      t.Fatalf("want ErrEmptyUsername, got %v", err)
+     ...
+      33  
+      34  func TestUserUseCase_CreateUser_PropagatesRepoError(t *testing.
+          T) {
+      35    repo := &mockUserRepo{createErr: domain.ErrUsernameConflict}
+      36 -  uc := usecase.NewUserUseCase(repo)                           
+      36 +  uc := usecase.NewCreateUserUseCase(repo)                     
+      37    _, err := uc.CreateUser(context.Background(), "alice")
+      38    if err != domain.ErrUsernameConflict {
+      39      t.Fatalf("want ErrUsernameConflict, got %v", err)
+
+⏺ Update(internal/usecase/user_test.go)
+  ⎿  Added 3 lines, removed 3 lines
+      11  
+      12  func TestUserUseCase_CreateUser_OK(t *testing.T) {
+      13    uc := usecase.NewCreateUserUseCase(&mockUserRepo{})
+      14 -  user, err := uc.CreateUser(context.Background(), "alice")    
+      14 +  user, err := uc.Execute(context.Background(), "alice")       
+      15    if err != nil {
+      16      t.Fatalf("unexpected error: %v", err)
+      17    }
+     ...
+      25  
+      26  func TestUserUseCase_CreateUser_EmptyUsername(t *testing.T) {
+      27    uc := usecase.NewCreateUserUseCase(&mockUserRepo{})
+      28 -  _, err := uc.CreateUser(context.Background(), "")            
+      28 +  _, err := uc.Execute(context.Background(), "")               
+      29    if err != domain.ErrEmptyUsername {
+      30      t.Fatalf("want ErrEmptyUsername, got %v", err)
+      31    }
+     ...
+      34  func TestUserUseCase_CreateUser_PropagatesRepoError(t *testing.
+          T) {
+      35    repo := &mockUserRepo{createErr: domain.ErrUsernameConflict}
+      36    uc := usecase.NewCreateUserUseCase(repo)
+      37 -  _, err := uc.CreateUser(context.Background(), "alice")       
+      37 +  _, err := uc.Execute(context.Background(), "alice")          
+      38    if err != domain.ErrUsernameConflict {
+      39      t.Fatalf("want ErrUsernameConflict, got %v", err)
+      40    }
+
+⏺ Update(internal/usecase/tweet_test.go)
+  ⎿  Added 7 lines, removed 7 lines
+      17    userID := uuid.New()
+      18    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, U
+          sername: "alice"}}
+      19    publisher := &mockTweetPublisher{}
+      20 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pub
+         -lisher)                                                        
+      20 +  uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+         +}, publisher)                                                  
+      21  
+      22    tweet, err := uc.CreateTweet(context.Background(), userID, "h
+          ello world")
+      23    if err != nil {
+     ...
+      32  }
+      33  
+      34  func TestTweetUseCase_CreateTweet_EmptyContent(t *testing.T) {
+      35 -  uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo
+         -{}, &mockTweetPublisher{})                                     
+      35 +  uc := usecase.NewCreateTweetUseCase(&mockUserRepo{}, &mockTwe
+         +etRepo{}, &mockTweetPublisher{})                               
+      36    _, err := uc.CreateTweet(context.Background(), uuid.New(), ""
+          )
+      37    if err != domain.ErrEmptyContent {
+      38      t.Fatalf("want ErrEmptyContent, got %v", err)
+     ...
+      40  }
+      41  
+      42  func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) 
+          {
+      43 -  uc := usecase.NewTweetUseCase(&mockUserRepo{}, &mockTweetRepo
+         -{}, &mockTweetPublisher{})                                     
+      43 +  uc := usecase.NewCreateTweetUseCase(&mockUserRepo{}, &mockTwe
+         +etRepo{}, &mockTweetPublisher{})                               
+      44    content := string(make([]rune, 281))
+      45    _, err := uc.CreateTweet(context.Background(), uuid.New(), co
+          ntent)
+      46    if err != domain.ErrContentTooLong {
+     ...
+      50  
+      51  func TestTweetUseCase_CreateTweet_UserNotFound(t *testing.T) {
+      52    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      53 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, &mo
+         -ckTweetPublisher{})                                            
+      53 +  uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+         +}, &mockTweetPublisher{})                                      
+      54  
+      55    _, err := uc.CreateTweet(context.Background(), uuid.New(), "h
+          ello")
+      56    if err != domain.ErrNotFound {
+     ...
+      62    userID := uuid.New()
+      63    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, U
+          sername: "bob"}}
+      64    publisher := &mockTweetPublisher{}
+      65 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pub
+         -lisher)                                                        
+      65 +  uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+         +}, publisher)                                                  
+      66  
+      67    _, err := uc.CreateTweet(context.Background(), userID, "async
+           fanout")
+      68    if err != nil {
+     ...
+      87    userID := uuid.New()
+      88    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID, U
+          sername: "alice"}}
+      89    publisher := &mockTweetPublisher{publishErr: domain.ErrNotFou
+          nd}
+      90 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pub
+         -lisher)                                                        
+      90 +  uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+         +}, publisher)                                                  
+      91  
+      92    _, err := uc.CreateTweet(context.Background(), userID, "ignor
+          e publish error")
+      93    if err != nil {
+     ...
+      102  
+      103    var buf bytes.Buffer
+      104    logger := slog.New(slog.NewTextHandler(&buf, nil))
+      105 -  uc := usecase.NewTweetUseCase(userRepo, &mockTweetRepo{}, pu
+          -blisher).WithLogger(logger)                                   
+      105 +  uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo
+          +{}, publisher).WithLogger(logger)                             
+      106  
+      107    _, err := uc.CreateTweet(context.Background(), userID, "test
+            publish logging")
+      108    if err != nil {
+
+⏺ Update(internal/usecase/follow_test.go)
+  ⎿  Added 6 lines, removed 6 lines
+      19    userRepo := &mockUserRepo{getUser: &domain.User{ID: followee}
+          }
+      20    followRepo := &mockFollowRepo{}
+      21    publisher := &mockFollowPublisher{}
+      22 -  uc := usecase.NewFollowUseCase(userRepo, followRepo, publishe
+         -r)                                                             
+      22 +  uc := usecase.NewFollowUserUseCase(userRepo, followRepo, publ
+         +isher)                                                         
+      23  
+      24    if err := uc.Follow(context.Background(), follower, followee)
+          ; err != nil {
+      25      t.Fatalf("unexpected error: %v", err)
+     ...
+      28  
+      29  func TestFollowUseCase_Follow_SelfFollow(t *testing.T) {
+      30    id := uuid.New()
+      31 -  uc := usecase.NewFollowUseCase(&mockUserRepo{}, &mockFollowRe
+         -po{}, &mockFollowPublisher{})                                  
+      31 +  uc := usecase.NewFollowUserUseCase(&mockUserRepo{}, &mockFoll
+         +owRepo{}, &mockFollowPublisher{})                              
+      32  
+      33    err := uc.Follow(context.Background(), id, id)
+      34    if err != domain.ErrSelfFollow {
+     ...
+      40    follower := uuid.New()
+      41    followee := uuid.New()
+      42    followRepo := &mockFollowRepo{existsResult: true}
+      43 -  uc := usecase.NewFollowUseCase(&mockUserRepo{}, followRepo, &
+         -mockFollowPublisher{})                                         
+      43 +  uc := usecase.NewFollowUserUseCase(&mockUserRepo{}, followRep
+         +o, &mockFollowPublisher{})                                     
+      44  
+      45    err := uc.Follow(context.Background(), follower, followee)
+      46    if err != domain.ErrAlreadyFollowing {
+     ...
+      52    follower := uuid.New()
+      53    followee := uuid.New()
+      54    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      55 -  uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, &
+         -mockFollowPublisher{})                                         
+      55 +  uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{
+         +}, &mockFollowPublisher{})                                     
+      56  
+      57    err := uc.Follow(context.Background(), follower, followee)
+      58    if err != domain.ErrNotFound {
+     ...
+      65    followee := uuid.New()
+      66    userRepo := &mockUserRepo{getUser: &domain.User{ID: followee}
+          }
+      67    publisher := &mockFollowPublisher{}
+      68 -  uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, p
+         -ublisher)                                                      
+      68 +  uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{
+         +}, publisher)                                                  
+      69  
+      70    if err := uc.Follow(context.Background(), follower, followee)
+          ; err != nil {
+      71      t.Fatalf("unexpected error: %v", err)
+     ...
+      90  
+      91    var buf bytes.Buffer
+      92    logger := slog.New(slog.NewTextHandler(&buf, nil))
+      93 -  uc := usecase.NewFollowUseCase(userRepo, &mockFollowRepo{}, p
+         -ublisher).WithLogger(logger)                                   
+      93 +  uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{
+         +}, publisher).WithLogger(logger)                               
+      94  
+      95    if err := uc.Follow(context.Background(), follower, followee)
+          ; err != nil {
+      96      t.Fatalf("publish error must not propagate, got: %v", err)
+
+⏺ Update(internal/usecase/timeline_test.go)
+  ⎿  Added 5 lines, removed 5 lines
+      16    timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{
+      17      {ID: uuid.New(), UserID: uuid.New(), Username: "bob", Conte
+          nt: "hello", CreatedAt: time.Now()},
+      18    }}
+      19 -  uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)     
+      19 +  uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)  
+      20  
+      21    items, err := uc.GetTimeline(context.Background(), userID, ni
+          l, nil)
+      22    if err != nil {
+     ...
+      29  
+      30  func TestTimelineUseCase_GetTimeline_UserNotFound(t *testing.T)
+           {
+      31    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      32 -  uc := usecase.NewTimelineUseCase(userRepo, &mockTimelineRepo{
+         -})                                                             
+      32 +  uc := usecase.NewGetTimelineUseCase(userRepo, &mockTimelineRe
+         +po{})                                                          
+      33  
+      34    _, err := uc.GetTimeline(context.Background(), uuid.New(), ni
+          l, nil)
+      35    if err != domain.ErrNotFound {
+     ...
+      41    userID := uuid.New()
+      42    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID}}
+      43    timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}
+          }
+      44 -  uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)     
+      44 +  uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)  
+      45  
+      46    items, err := uc.GetTimeline(context.Background(), userID, ni
+          l, nil)
+      47    if err != nil {
+     ...
+      57    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID}}
+      58    timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}
+          }
+      59    pub := &mockUserActivityPublisher{}
+      60 -  uc := usecase.NewTimelineUseCase(userRepo, timelineRepo).With
+         -UserActivityPublisher(pub)                                     
+      60 +  uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo).W
+         +ithUserActivityPublisher(pub)                                  
+      61  
+      62    before := time.Now()
+      63    _, err := uc.GetTimeline(context.Background(), userID, nil, n
+          il)
+     ...
+      82    userID := uuid.New()
+      83    userRepo := &mockUserRepo{getUser: &domain.User{ID: userID}}
+      84    timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}
+          }
+      85 -  uc := usecase.NewTimelineUseCase(userRepo, timelineRepo)     
+      85 +  uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)  
+      86  
+      87    // No publisher wired — should not panic
+      88    _, err := uc.GetTimeline(context.Background(), userID, nil, n
+          il)
+
+⏺ Update(internal/usecase/tweet_test.go)
+  ⎿  Added 7 lines, removed 7 lines
+      19    publisher := &mockTweetPublisher{}
+      20    uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+          }, publisher)
+      21  
+      22 -  tweet, err := uc.CreateTweet(context.Background(), userID, "h
+         -ello world")                                                   
+      22 +  tweet, err := uc.Execute(context.Background(), userID, "hello
+         + world")                                                       
+      23    if err != nil {
+      24      t.Fatalf("unexpected error: %v", err)
+      25    }
+     ...
+      33  
+      34  func TestTweetUseCase_CreateTweet_EmptyContent(t *testing.T) {
+      35    uc := usecase.NewCreateTweetUseCase(&mockUserRepo{}, &mockTwe
+          etRepo{}, &mockTweetPublisher{})
+      36 -  _, err := uc.CreateTweet(context.Background(), uuid.New(), ""
+         -)                                                              
+      36 +  _, err := uc.Execute(context.Background(), uuid.New(), "")   
+      37    if err != domain.ErrEmptyContent {
+      38      t.Fatalf("want ErrEmptyContent, got %v", err)
+      39    }
+     ...
+      42  func TestTweetUseCase_CreateTweet_ContentTooLong(t *testing.T) 
+          {
+      43    uc := usecase.NewCreateTweetUseCase(&mockUserRepo{}, &mockTwe
+          etRepo{}, &mockTweetPublisher{})
+      44    content := string(make([]rune, 281))
+      45 -  _, err := uc.CreateTweet(context.Background(), uuid.New(), co
+         -ntent)                                                         
+      45 +  _, err := uc.Execute(context.Background(), uuid.New(), conten
+         +t)                                                             
+      46    if err != domain.ErrContentTooLong {
+      47      t.Fatalf("want ErrContentTooLong, got %v", err)
+      48    }
+     ...
+      52    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      53    uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+          }, &mockTweetPublisher{})
+      54  
+      55 -  _, err := uc.CreateTweet(context.Background(), uuid.New(), "h
+         -ello")                                                         
+      55 +  _, err := uc.Execute(context.Background(), uuid.New(), "hello
+         +")                                                             
+      56    if err != domain.ErrNotFound {
+      57      t.Fatalf("want ErrNotFound, got %v", err)
+      58    }
+     ...
+      64    publisher := &mockTweetPublisher{}
+      65    uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+          }, publisher)
+      66  
+      67 -  _, err := uc.CreateTweet(context.Background(), userID, "async
+         - fanout")                                                      
+      67 +  _, err := uc.Execute(context.Background(), userID, "async fan
+         +out")                                                          
+      68    if err != nil {
+      69      t.Fatalf("unexpected error: %v", err)
+      70    }
+     ...
+      89    publisher := &mockTweetPublisher{publishErr: domain.ErrNotFou
+          nd}
+      90    uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo{
+          }, publisher)
+      91  
+      92 -  _, err := uc.CreateTweet(context.Background(), userID, "ignor
+         -e publish error")                                              
+      92 +  _, err := uc.Execute(context.Background(), userID, "ignore pu
+         +blish error")                                                  
+      93    if err != nil {
+      94      t.Fatalf("publish error must not propagate, got: %v", err)
+      95    }
+     ...
+      104    logger := slog.New(slog.NewTextHandler(&buf, nil))
+      105    uc := usecase.NewCreateTweetUseCase(userRepo, &mockTweetRepo
+           {}, publisher).WithLogger(logger)
+      106  
+      107 -  _, err := uc.CreateTweet(context.Background(), userID, "test
+          - publish logging")                                            
+      107 +  _, err := uc.Execute(context.Background(), userID, "test pub
+          +lish logging")                                                
+      108    if err != nil {
+      109      t.Fatalf("publish error must not propagate, got: %v", err)
+      110    }
+
+⏺ Update(internal/usecase/follow_test.go)
+  ⎿  Added 6 lines, removed 6 lines
+      21    publisher := &mockFollowPublisher{}
+      22    uc := usecase.NewFollowUserUseCase(userRepo, followRepo, publ
+          isher)
+      23  
+      24 -  if err := uc.Follow(context.Background(), follower, followee)
+         -; err != nil {                                                 
+      24 +  if err := uc.Execute(context.Background(), follower, followee
+         +); err != nil {                                                
+      25      t.Fatalf("unexpected error: %v", err)
+      26    }
+      27  }
+     ...
+      30    id := uuid.New()
+      31    uc := usecase.NewFollowUserUseCase(&mockUserRepo{}, &mockFoll
+          owRepo{}, &mockFollowPublisher{})
+      32  
+      33 -  err := uc.Follow(context.Background(), id, id)               
+      33 +  err := uc.Execute(context.Background(), id, id)              
+      34    if err != domain.ErrSelfFollow {
+      35      t.Fatalf("want ErrSelfFollow, got %v", err)
+      36    }
+     ...
+      42    followRepo := &mockFollowRepo{existsResult: true}
+      43    uc := usecase.NewFollowUserUseCase(&mockUserRepo{}, followRep
+          o, &mockFollowPublisher{})
+      44  
+      45 -  err := uc.Follow(context.Background(), follower, followee)   
+      45 +  err := uc.Execute(context.Background(), follower, followee)  
+      46    if err != domain.ErrAlreadyFollowing {
+      47      t.Fatalf("want ErrAlreadyFollowing, got %v", err)
+      48    }
+     ...
+      54    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      55    uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{
+          }, &mockFollowPublisher{})
+      56  
+      57 -  err := uc.Follow(context.Background(), follower, followee)   
+      57 +  err := uc.Execute(context.Background(), follower, followee)  
+      58    if err != domain.ErrNotFound {
+      59      t.Fatalf("want ErrNotFound, got %v", err)
+      60    }
+     ...
+      67    publisher := &mockFollowPublisher{}
+      68    uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{
+          }, publisher)
+      69  
+      70 -  if err := uc.Follow(context.Background(), follower, followee)
+         -; err != nil {                                                 
+      70 +  if err := uc.Execute(context.Background(), follower, followee
+         +); err != nil {                                                
+      71      t.Fatalf("unexpected error: %v", err)
+      72    }
+      73    if len(publisher.calls) != 1 {
+     ...
+      92    logger := slog.New(slog.NewTextHandler(&buf, nil))
+      93    uc := usecase.NewFollowUserUseCase(userRepo, &mockFollowRepo{
+          }, publisher).WithLogger(logger)
+      94  
+      95 -  if err := uc.Follow(context.Background(), follower, followee)
+         -; err != nil {                                                 
+      95 +  if err := uc.Execute(context.Background(), follower, followee
+         +); err != nil {                                                
+      96      t.Fatalf("publish error must not propagate, got: %v", err)
+      97    }
+      98    if !strings.Contains(buf.String(), "rabbitmq connection refus
+          ed") {
+
+⏺ Update(internal/usecase/timeline_test.go)
+  ⎿  Added 5 lines, removed 5 lines
+      18    }}
+      19    uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)
+      20  
+      21 -  items, err := uc.GetTimeline(context.Background(), userID, ni
+         -l, nil)                                                        
+      21 +  items, err := uc.Execute(context.Background(), userID, nil, n
+         +il)                                                            
+      22    if err != nil {
+      23      t.Fatalf("unexpected error: %v", err)
+      24    }
+     ...
+      31    userRepo := &mockUserRepo{getErr: domain.ErrNotFound}
+      32    uc := usecase.NewGetTimelineUseCase(userRepo, &mockTimelineRe
+          po{})
+      33  
+      34 -  _, err := uc.GetTimeline(context.Background(), uuid.New(), ni
+         -l, nil)                                                        
+      34 +  _, err := uc.Execute(context.Background(), uuid.New(), nil, n
+         +il)                                                            
+      35    if err != domain.ErrNotFound {
+      36      t.Fatalf("want ErrNotFound, got %v", err)
+      37    }
+     ...
+      43    timelineRepo := &mockTimelineRepo{items: []domain.TweetItem{}
+          }
+      44    uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)
+      45  
+      46 -  items, err := uc.GetTimeline(context.Background(), userID, ni
+         -l, nil)                                                        
+      46 +  items, err := uc.Execute(context.Background(), userID, nil, n
+         +il)                                                            
+      47    if err != nil {
+      48      t.Fatalf("unexpected error: %v", err)
+      49    }
+     ...
+      60    uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo).W
+          ithUserActivityPublisher(pub)
+      61  
+      62    before := time.Now()
+      63 -  _, err := uc.GetTimeline(context.Background(), userID, nil, n
+         -il)                                                            
+      63 +  _, err := uc.Execute(context.Background(), userID, nil, nil) 
+      64    if err != nil {
+      65      t.Fatalf("unexpected error: %v", err)
+      66    }
+     ...
+      85    uc := usecase.NewGetTimelineUseCase(userRepo, timelineRepo)
+      86  
+      87    // No publisher wired — should not panic
+      88 -  _, err := uc.GetTimeline(context.Background(), userID, nil, n
+         -il)                                                            
+      88 +  _, err := uc.Execute(context.Background(), userID, nil, nil) 
+      89    if err != nil {
+      90      t.Fatalf("unexpected error: %v", err)
+      91    }
+
+⏺ Ahora los handlers (interfaces privadas + call sites) y sus mocks, en
+  paralelo.
+
+⏺ Update(internal/handler/user.go)
+  ⎿  Added 1 line, removed 1 line
+       8  )
+       9  
+      10  type userCreator interface {
+      11 -  CreateUser(ctx context.Context, username string) (*domain.Use
+         -r, error)                                                      
+      11 +  Execute(ctx context.Context, username string) (*domain.User, 
+         +error)                                                         
+      12  }
+      13  
+      14  type UserHandler struct {
+
+⏺ Update(internal/handler/tweet.go)
+  ⎿  Added 1 line, removed 1 line
+       9  )
+      10  
+      11  type tweetCreator interface {
+      12 -  CreateTweet(ctx context.Context, userID uuid.UUID, content st
+         -ring) (*domain.Tweet, error)                                   
+      12 +  Execute(ctx context.Context, userID uuid.UUID, content string
+         +) (*domain.Tweet, error)                                       
+      13  }
+      14  
+      15  type TweetHandler struct {
+
+⏺ Update(internal/handler/follow.go)
+  ⎿  Added 1 line, removed 1 line
+       8  )
+       9  
+      10  type userFollower interface {
+      11 -  Follow(ctx context.Context, followerID, followeeID uuid.UUID)
+         - error                                                         
+      11 +  Execute(ctx context.Context, followerID, followeeID uuid.UUID
+         +) error                                                        
+      12  }
+      13  
+      14  type FollowHandler struct {
+
+⏺ Update(internal/handler/timeline.go)
+  ⎿  Added 1 line, removed 1 line
+      10  )
+      11  
+      12  type timelineGetter interface {
+      13 -  GetTimeline(ctx context.Context, userID uuid.UUID, after, bef
+         -ore *uuid.UUID) ([]domain.TweetItem, error)                    
+      13 +  Execute(ctx context.Context, userID uuid.UUID, after, before 
+         +*uuid.UUID) ([]domain.TweetItem, error)                        
+      14  }
+      15  
+      16  type TimelineHandler struct {
+
+⏺ Ahora los call sites en los handlers y los mocks.
+
+⏺ Update(internal/handler/user.go)
+  ⎿  Added 1 line, removed 1 line
+      27      writeJSON(w, http.StatusBadRequest, map[string]string{"erro
+          r": "invalid request body"})
+      28      return
+      29    }
+      30 -  user, err := h.svc.CreateUser(r.Context(), req.Username)     
+      30 +  user, err := h.svc.Execute(r.Context(), req.Username)        
+      31    if err != nil {
+      32      writeJSON(w, domainErrToStatus(err), map[string]string{"err
+          or": err.Error()})
+      33      return
+
+⏺ Update(internal/handler/tweet.go)
+  ⎿  Added 1 line, removed 1 line
+      33      writeJSON(w, http.StatusBadRequest, map[string]string{"erro
+          r": "invalid request body"})
+      34      return
+      35    }
+      36 -  tweet, err := h.svc.CreateTweet(r.Context(), userID, req.Cont
+         -ent)                                                           
+      36 +  tweet, err := h.svc.Execute(r.Context(), userID, req.Content)
+      37    if err != nil {
+      38      writeJSON(w, domainErrToStatus(err), map[string]string{"err
+          or": err.Error()})
+      39      return
+
+⏺ Update(internal/handler/follow.go)
+  ⎿  Added 1 line, removed 1 line
+      37      writeJSON(w, http.StatusBadRequest, map[string]string{"erro
+          r": "followee_id must be a valid UUID"})
+      38      return
+      39    }
+      40 -  if err := h.svc.Follow(r.Context(), followerID, followeeID); 
+         -err != nil {                                                   
+      40 +  if err := h.svc.Execute(r.Context(), followerID, followeeID);
+         + err != nil {                                                  
+      41      writeJSON(w, domainErrToStatus(err), map[string]string{"err
+          or": err.Error()})
+      42      return
+      43    }
+
+⏺ Update(internal/handler/timeline.go)
+  ⎿  Added 1 line, removed 1 line
+      62      before = &id
+      63    }
+      64  
+      65 -  items, err := h.svc.GetTimeline(r.Context(), userID, after, b
+         -efore)                                                         
+      65 +  items, err := h.svc.Execute(r.Context(), userID, after, befor
+         +e)                                                             
+      66    if err != nil {
+      67      writeJSON(w, domainErrToStatus(err), map[string]string{"err
+          or": err.Error()})
+      68      return
+
+⏺ Update(internal/handler/mocks_test.go)
+  ⎿  Added 4 lines, removed 4 lines
+      24    err  error
+      25  }
+      26  
+      27 -func (m *mockUserSvc) CreateUser(ctx context.Context, username 
+         -string) (*domain.User, error) {                                
+      27 +func (m *mockUserSvc) Execute(ctx context.Context, username str
+         +ing) (*domain.User, error) {                                   
+      28    return m.user, m.err
+      29  }
+      30  
+     ...
+      33    err   error
+      34  }
+      35  
+      36 -func (m *mockTweetSvc) CreateTweet(ctx context.Context, userID 
+         -uuid.UUID, content string) (*domain.Tweet, error) {            
+      36 +func (m *mockTweetSvc) Execute(ctx context.Context, userID uuid
+         +.UUID, content string) (*domain.Tweet, error) {                
+      37    return m.tweet, m.err
+      38  }
+      39  
+     ...
+      41    err error
+      42  }
+      43  
+      44 -func (m *mockFollowSvc) Follow(ctx context.Context, followerID,
+         - followeeID uuid.UUID) error {                                 
+      44 +func (m *mockFollowSvc) Execute(ctx context.Context, followerID
+         +, followeeID uuid.UUID) error {                                
+      45    return m.err
+      46  }
+      47  
+     ...
+      52    capturedBefore *uuid.UUID
+      53  }
+      54  
+      55 -func (m *mockTimelineSvc) GetTimeline(ctx context.Context, user
+         -ID uuid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, er
+         -ror) {                                                         
+      55 +func (m *mockTimelineSvc) Execute(ctx context.Context, userID u
+         +uid.UUID, after, before *uuid.UUID) ([]domain.TweetItem, error)
+         + {                                                             
+      56    m.capturedAfter = after
+      57    m.capturedBefore = before
+      58    return m.items, m.err
+
+⏺ Finalmente, main.go.
+
+⏺ Update(cmd/api/main.go)
+  ⎿  Added 4 lines, removed 4 lines
+       92    go consumer.ConsumeFanoutRetry(ctx)
+       93    go consumer.ConsumeUserActivity(ctx)
+       94  
+       95 -  userUC := usecase.NewUserUseCase(userRepo)                  
+       96 -  tweetUC := usecase.NewTweetUseCase(userRepo, tweetRepo, publ
+          -isher)                                                        
+       97 -  followUC := usecase.NewFollowUseCase(userRepo, followRepo, p
+          -ublisher)                                                     
+       98 -  timelineUC := usecase.NewTimelineUseCase(userRepo, redisTime
+          -line).                                                        
+       95 +  userUC := usecase.NewCreateUserUseCase(userRepo)            
+       96 +  tweetUC := usecase.NewCreateTweetUseCase(userRepo, tweetRepo
+          +, publisher)                                                  
+       97 +  followUC := usecase.NewFollowUserUseCase(userRepo, followRep
+          +o, publisher)                                                 
+       98 +  timelineUC := usecase.NewGetTimelineUseCase(userRepo, redisT
+          +imeline).                                                     
+       99      WithUserActivityPublisher(publisher)
+      100  
+      101    router := handler.NewRouter(
+
+⏺ Ahora verifico que compila y los tests pasan.
+⏺ Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+⏺ Bash(go test ./internal/usecase/... ./internal/handler/... -v 2>&1 | grep -E
+      "^(=== RUN|--- PASS|--- FAIL|FAIL|ok)")
+  ⎿  === RUN   TestFollowUseCase_Follow_OK
+     --- PASS: TestFollowUseCase_Follow_OK (0.00s)
+     === RUN   TestFollowUseCase_Follow_SelfFollow
+     … +32 lines (ctrl+o to expand)
+
+⏺ Bash(go test ./internal/handler/... 2>&1 | head -30)
+  ⎿  # uala/internal/handler_test [uala/internal/handler.test]
+     internal/handler/setup_test.go:92:34: undefined: usecase.NewUserUseCas
+     e
+     … +8 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(internal/handler/setup_test.go)
+  ⎿  Added 4 lines, removed 4 lines
+      89    redisTimeline := redisrepo.NewTimelineRepository(testRDB, pgT
+          imeline, 500)
+      90  
+      91    router := handler.NewRouter(
+      92 -    handler.NewUserHandler(usecase.NewUserUseCase(userRepo)),  
+      93 -    handler.NewTweetHandler(usecase.NewTweetUseCase(userRepo, t
+         -weetRepo, &noopTweetPublisher{})),                             
+      94 -    handler.NewFollowHandler(usecase.NewFollowUseCase(userRepo,
+         - followRepo, &noopFollowPublisher{})),                         
+      95 -    handler.NewTimelineHandler(usecase.NewTimelineUseCase(userR
+         -epo, redisTimeline)),                                          
+      92 +    handler.NewUserHandler(usecase.NewCreateUserUseCase(userRep
+         +o)),                                                           
+      93 +    handler.NewTweetHandler(usecase.NewCreateTweetUseCase(userR
+         +epo, tweetRepo, &noopTweetPublisher{})),                       
+      94 +    handler.NewFollowHandler(usecase.NewFollowUserUseCase(userR
+         +epo, followRepo, &noopFollowPublisher{})),                     
+      95 +    handler.NewTimelineHandler(usecase.NewGetTimelineUseCase(us
+         +erRepo, redisTimeline)),                                       
+      96    )
+      97    srv := httptest.NewServer(router)
+      98    t.Cleanup(srv.Close)
+
+⏺ Bash(go test ./internal/usecase/... ./internal/handler/... 2>&1 | grep -E
+      "^(ok|FAIL|---)")
+  ⎿  ok         uala/internal/usecase   0.209s
+     ok         uala/internal/handler   0.644s
+
+⏺ Todo verde. Resumen del refactor:
+
+  ┌───────────────────────────────┬──────────────────────────────┐
+  │             Antes             │           Después            │
+  ├───────────────────────────────┼──────────────────────────────┤
+  │ UserUseCase.CreateUser()      │ CreateUserUseCase.Execute()  │
+  ├───────────────────────────────┼──────────────────────────────┤
+  │ TweetUseCase.CreateTweet()    │ CreateTweetUseCase.Execute() │
+  ├───────────────────────────────┼──────────────────────────────┤
+  │ FollowUseCase.Follow()        │ FollowUserUseCase.Execute()  │
+  ├───────────────────────────────┼──────────────────────────────┤
+  │ TimelineUseCase.GetTimeline() │ GetTimelineUseCase.Execute() │
+  └───────────────────────────────┴──────────────────────────────┘
+
+  Archivos tocados: 4 use cases, 4 handlers, mocks_test.go (handler + usecase),
+  setup_test.go, y main.go. Los 22 tests pasan sin cambios de comportamiento.
+
+✻ Brewed for 2m 48s
+
+❯ actualiza la documentacion                                                    
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+⏺ Update(CLAUDE.md)
+  ⎿  File must be read first
+
+⏺ Update(CLAUDE.md)
+  ⎿  File must be read first
+
+⏺ Update(docs/Decisiones-de-diseño.md)
+  ⎿  Added 1 line, removed 1 line
+      13  Los use cases son structs concretos. Ningún package define una 
+          interfaz que los represente en código de producción. Los handle
+          rs dependen directamente de ellos:
+      14  
+      15  ```go
+      16 -handler.NewUserHandler(usecase.NewUserUseCase(userRepo))       
+      16 +handler.NewUserHandler(usecase.NewCreateUserUseCase(userRepo)) 
+      17  ```
+      18  
+      19  Para testear handlers en aislamiento, cada handler define una *
+          *interfaz privada mínima** que vive únicamente en ese package y
+           no es visible desde afuera:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(CLAUDE.md)
+  ⎿  Added 1 line, removed 1 line
+      27  go test ./internal/usecase/...
+      28  
+      29  # Single test by name
+      30 -go test ./internal/usecase/... -run TestTweetUseCase_CreateTwee
+         -t -v                                                           
+      30 +go test ./internal/usecase/... -run TestTweetUseCase_CreateTwee
+         +t_OK -v                                                        
+      31  
+      32  # Single integration test
+      33  INTEGRATION=1 go test ./internal/repository/postgres/... -run T
+          estFollowRepository_GetActiveFollowers -v
+
+⏺ Update(CLAUDE.md)
+  ⎿  Added 1 line, removed 1 line
+      47  
+      48  **`internal/domain/`** — Pure Go structs and interfaces. All re
+          pository and publisher contracts live here. No framework depend
+          encies. `errors.go` defines the sentinel errors that handlers m
+          ap to HTTP status codes.
+      49  
+      50 -**`internal/usecase/`** — Concrete structs (no interfaces, per 
+         -ADR-001). Each use case owns one operation: `UserUseCase.Create
+         -`, `TweetUseCase.CreateTweet`, `FollowUseCase.Follow`, `Timelin
+         -eUseCase.GetTimeline`. Use cases validate business rules and or
+         -chestrate repositories + publishers.                           
+      50 +**`internal/usecase/`** — Concrete structs (no interfaces, per 
+         +ADR-001). Each use case owns one operation exposed as `Execute`
+         +: `CreateUserUseCase`, `CreateTweetUseCase`, `FollowUserUseCase
+         +`, `GetTimelineUseCase`. Use cases validate business rules and 
+         +orchestrate repositories + publishers.                         
+      51  
+      52  **`internal/handler/`** — HTTP layer using stdlib `net/http`. H
+          andlers depend directly on concrete use cases. For unit testing
+          , each handler defines a private minimal interface used only in
+           `*_test.go` files. Integration tests (`INTEGRATION=1`) spin up
+           a real `httptest.Server` with Postgres + Redis.
+      53  
+
+⏺ Listo. Tres cambios en la documentación:
+
+  - CLAUDE.md: actualizada la descripción del layer usecase con los nuevos
+  nombres, y corregido el ejemplo de test por nombre
+  (TestTweetUseCase_CreateTweet_OK)
+  - docs/Decisiones-de-diseño.md: actualizado el snippet de código del ADR-001
+  con NewCreateUserUseCase
+
+✻ Churned for 45s
+
+※ recap: Refactored all use cases to follow the verb-noun-UseCase naming convention with a single Execute method, then updated CLAUDE.md and the design decisions doc. No pending actions.
