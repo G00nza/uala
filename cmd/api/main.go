@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"uala/internal/handler"
 	"uala/internal/infra"
 	"uala/internal/messaging/rabbitmq"
@@ -17,6 +16,8 @@ import (
 	"uala/internal/repository/postgres"
 	redisrepo "uala/internal/repository/redis"
 	"uala/internal/usecase"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -81,28 +82,27 @@ func main() {
 
 	publisher := rabbitmq.NewPublisher(amqpConn)
 
-	consumer := rabbitmq.NewConsumer(amqpConn, followRepo, redisTimeline, pgTimelineRepo, cfg.FollowBackfillLimit).
-		WithRetryPublisher(publisher).
-		WithDeadLetterPublisher(rabbitmq.NewDeadLetterPublisher(publisher)).
-		WithUserActivityRepo(userRepo).
-		WithActivityTTL(cfg.ActivityTTL)
+	appendTweetUC := usecase.NewAppendTweetToTimelineUseCase(redisTimeline)
+	fanoutTweetUC := usecase.NewFanoutTweetUseCase(followRepo, appendTweetUC, cfg.ActivityTTL).
+		WithRetryPublisher(publisher)
+	backfillUC := usecase.NewBackfillTimelineUseCase(pgTimelineRepo, appendTweetUC, cfg.FollowBackfillLimit, cfg.ActivityTTL)
 
-	go consumer.ConsumeTweets(ctx)
-	go consumer.ConsumeFollows(ctx)
-	go consumer.ConsumeFanoutRetry(ctx)
-	go consumer.ConsumeUserActivity(ctx)
+	go rabbitmq.NewTweetCreatedConsumer(amqpConn, fanoutTweetUC).Consume(ctx)
+	go rabbitmq.NewFollowCreatedConsumer(amqpConn, backfillUC).Consume(ctx)
+	go rabbitmq.NewFanoutRetryConsumer(amqpConn, appendTweetUC, rabbitmq.NewDeadLetterPublisher(publisher), cfg.ActivityTTL).Consume(ctx)
+	go rabbitmq.NewUserActivityConsumer(amqpConn, userRepo).Consume(ctx)
 
-	userUC := usecase.NewCreateUserUseCase(userRepo)
-	tweetUC := usecase.NewCreateTweetUseCase(userRepo, tweetRepo, publisher)
-	followUC := usecase.NewFollowUserUseCase(userRepo, followRepo, publisher)
-	timelineUC := usecase.NewGetTimelineUseCase(userRepo, redisTimeline).
+	createUserUseCase := usecase.NewCreateUserUseCase(userRepo)
+	createTweetUseCase := usecase.NewCreateTweetUseCase(userRepo, tweetRepo, publisher)
+	followUserUseCase := usecase.NewFollowUserUseCase(userRepo, followRepo, publisher)
+	getTimelineUseCase := usecase.NewGetTimelineUseCase(userRepo, redisTimeline).
 		WithUserActivityPublisher(publisher)
 
 	router := handler.NewRouter(
-		handler.NewUserHandler(userUC),
-		handler.NewTweetHandler(tweetUC),
-		handler.NewFollowHandler(followUC),
-		handler.NewTimelineHandler(timelineUC),
+		handler.NewUserHandler(createUserUseCase),
+		handler.NewTweetHandler(createTweetUseCase),
+		handler.NewFollowHandler(followUserUseCase),
+		handler.NewTimelineHandler(getTimelineUseCase),
 	)
 
 	ln, err := net.Listen("tcp", ":"+cfg.Port)
